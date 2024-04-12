@@ -87,6 +87,7 @@ import org.apache.calcite.rel.rules.PruneEmptyRules;
 import org.apache.calcite.rel.rules.PushProjector;
 import org.apache.calcite.rel.rules.ReduceExpressionsRule;
 import org.apache.calcite.rel.rules.ReduceExpressionsRule.ProjectReduceExpressionsRule;
+import org.apache.calcite.rel.rules.SingleValuesOptimizationRules;
 import org.apache.calcite.rel.rules.SpatialRules;
 import org.apache.calcite.rel.rules.UnionMergeRule;
 import org.apache.calcite.rel.rules.ValuesReduceRule;
@@ -314,6 +315,19 @@ class RelOptRulesTest extends RelOptTestBase {
     final String sql = "select deptno from emp tablesample bernoulli(50)";
     sql(sql)
         .withRule(CoreRules.SAMPLE_TO_FILTER)
+        .check();
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/projects/CALCITE/issues/CALCITE-6317">
+   * [CALCITE-6317] Incorrect constant replacement when group keys are NULL</a>. */
+  @Test void testPredicatePull() {
+    final String sql = "select deptno, sal "
+                 + "from emp "
+                + "where deptno = 10 "
+                + "group by rollup(sal, deptno)";
+    sql(sql).withRule(CoreRules.PROJECT_REDUCE_EXPRESSIONS)
         .check();
   }
 
@@ -1976,6 +1990,32 @@ class RelOptRulesTest extends RelOptTestBase {
         .check();
   }
 
+  /** Test case for <a href="https://issues.apache.org/jira/projects/CALCITE/issues/CALCITE-6332">
+   * [CALCITE-6332] Optimization CoreRules.AGGREGATE_EXPAND_DISTINCT_AGGREGATES_TO_JOIN
+   * produces incorrect results for aggregates with groupSets</a>. */
+  @Test void testIssue6332() {
+    final String sql = "select count(distinct deptno) as cd, count(*) as c\n"
+        + "from emp\n"
+        + "group by cube(deptno)";
+    sql(sql)
+        .withRule(CoreRules.AGGREGATE_EXPAND_DISTINCT_AGGREGATES_TO_JOIN)
+        .checkUnchanged();
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/projects/CALCITE/issues/CALCITE-6349">
+   * [CALCITE-6349] CoreRules.PROJECT_REDUCE_EXPRESSIONS crashes on expression
+   * with ARRAY_REPEAT</a>. */
+  @Test void testArrayRepeat() {
+    final String sql = "select array_repeat(1, null)";
+    sql(sql)
+        .withFactory(
+            t -> t.withOperatorTable(
+                opTab -> SqlLibraryOperatorTableFactory.INSTANCE.getOperatorTable(
+                    SqlLibrary.STANDARD, SqlLibrary.SPARK)))
+        .withRule(CoreRules.PROJECT_REDUCE_EXPRESSIONS)
+        .check();
+  }
+
   @Test void testDistinctCountMixed() {
     final String sql = "select deptno, count(distinct deptno, job) as cddj,\n"
         + "  sum(sal) as s\n"
@@ -2005,6 +2045,20 @@ class RelOptRulesTest extends RelOptTestBase {
     sql(sql)
         .withRule(CoreRules.AGGREGATE_EXPAND_DISTINCT_AGGREGATES,
             CoreRules.PROJECT_MERGE)
+        .check();
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6353">[CALCITE-6353]
+   * Optimization CoreRules.PROJECT_REDUCE_EXPRESSIONS crashes
+   * while optimizing ARRAY_CONCAT expression</a>. */
+  @Test void testArrayConcat() {
+    final String sql = "select array_concat(ARRAY [1, 2], ARRAY [3, 4])";
+    sql(sql).withFactory(
+        t -> t.withOperatorTable(
+            opTab -> SqlLibraryOperatorTableFactory.INSTANCE.getOperatorTable(
+                SqlLibrary.STANDARD, SqlLibrary.BIG_QUERY)))
+        .withRule(CoreRules.PROJECT_REDUCE_EXPRESSIONS)
         .check();
   }
 
@@ -2132,6 +2186,27 @@ class RelOptRulesTest extends RelOptTestBase {
         + "GROUP BY deptno";
     sql(sql)
         .withRule(CoreRules.AGGREGATE_EXPAND_DISTINCT_AGGREGATES_TO_JOIN)
+        .check();
+  }
+
+  @Test void testDistinctWithFilterWithoutGroupByUsingJoin() {
+    final String sql = "SELECT SUM(comm), COUNT(DISTINCT sal) FILTER (WHERE sal > 1000)\n"
+                       + "FROM emp";
+    sql(sql)
+        .withRule(CoreRules.AGGREGATE_EXPAND_DISTINCT_AGGREGATES_TO_JOIN)
+        .check();
+  }
+
+  @Test void testMultipleDistinctWithSameArgsDifferentFilterUsingJoin() {
+    final String sql = "select deptno, "
+                       + "count(distinct sal) FILTER (WHERE sal > 1000), "
+                       + "count(distinct sal) FILTER (WHERE sal > 500) "
+                       + "from sales.emp group by deptno";
+    sql(sql)
+        .withRule(
+            CoreRules.AGGREGATE_EXPAND_DISTINCT_AGGREGATES_TO_JOIN,
+            CoreRules.AGGREGATE_PROJECT_MERGE
+        )
         .check();
   }
 
@@ -4177,6 +4252,109 @@ class RelOptRulesTest extends RelOptTestBase {
         .check();
   }
 
+  @Test void testJoinWithConstantRowOnRight() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from emp e cross join (select 5, 5) c";
+
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_RIGHT_INSTANCE)
+        .check();
+  }
+
+  @Test void testJoinWithConstantRowOnLeft() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from (select 5, 5) c cross join emp e";
+
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_LEFT_INSTANCE)
+        .check();
+  }
+
+  @Test void testInnerJoinWithConstantRowOnLeft() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from (select 5 as nm) c inner join emp e on e.empno = c.nm";
+
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_LEFT_INSTANCE)
+        .check();
+  }
+
+  @Test void testInnerJoinWithConstantRowOnRight() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from emp e inner join (select 5 as nm) c  on e.empno = c.nm";
+
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_RIGHT_INSTANCE)
+        .check();
+  }
+
+  @Test void testRightJoinWithConstantRowOnLeft() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from (select 5 as nm) c right join emp e on e.empno = c.nm";
+
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_LEFT_INSTANCE)
+        .check();
+  }
+
+  @Test void testLeftJoinWithConstantRowOnRight() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from emp e left join (select 5 as nm) c  on e.empno = c.nm";
+
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_RIGHT_INSTANCE)
+        .check();
+  }
+
+  @Test void testInnerJoinWithTimeStampSingleRowOnRight() {
+    final String sql = "select e.empno, e.ename, c.t"
+        + " from emp e inner join (select 7934 as ono, current_timestamp as t) c on e.empno=c.ono";
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_RIGHT_PROJECT_INSTANCE)
+        .check();
+  }
+
+  @Test void testLeftJoinWithTimeStampSingleRowOnRight() {
+    final String sql = "select e.empno, e.ename, c.t "
+        + "from emp e left join (select 7934 as ono, current_timestamp as t) c "
+        + "  on e.empno = c.ono";
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_RIGHT_PROJECT_INSTANCE)
+        .check();
+  }
+
+  @Test void testCrossJoinWithTimeStampSingleRowOnRight() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from emp e cross join (select 5, current_timestamp) c";
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_RIGHT_PROJECT_INSTANCE)
+        .check();
+  }
+  @Test void testInnerJoinWithTimeStampSingleRowOnLeft() {
+    final String sql = "select e.empno, e.ename, c.t"
+        + " from (select 7934 as ono, current_timestamp as t) c inner join emp e on e.empno=c.ono";
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_LEFT_PROJECT_INSTANCE)
+        .check();
+  }
+
+  @Test void testRightJoinWithTimeStampSingleRowOnLeft() {
+    final String sql = "select e.empno, e.ename, c.t "
+        + "from (select 7934 as ono, current_timestamp as t) c right join emp e "
+        + "  on e.empno = c.ono";
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_LEFT_PROJECT_INSTANCE)
+        .check();
+  }
+
+  @Test void testCrossJoinWithTimeStampSingleRowOnLeft() {
+    final String sql = "select e.empno, e.ename, c.*"
+        + " from (select 5, current_timestamp) c cross join emp e ";
+    sql(sql)
+        .withRule(SingleValuesOptimizationRules.JOIN_LEFT_PROJECT_INSTANCE)
+        .check();
+  }
+
   @Test void testEmptyTableTransformsComplexQueryToSingleTableScan() {
     final String sql = "select products.PRODUCTID, products.NAME from products left join\n"
         + "(select * from products as e\n"
@@ -4615,7 +4793,7 @@ class RelOptRulesTest extends RelOptTestBase {
       final RelDataType type = rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BIGINT);
 
       RelNode left = b
-          .values(new String[]{"x", "y"}, 1, 2).build();
+          .values(new String[]{"x", "y"}, 1, 2, 2, 1).build();
       RexNode ref = rexBuilder.makeInputRef(left, 0);
       RexLiteral literal1 = rexBuilder.makeLiteral(1, type);
       RexLiteral literal2 = rexBuilder.makeLiteral(2, type);

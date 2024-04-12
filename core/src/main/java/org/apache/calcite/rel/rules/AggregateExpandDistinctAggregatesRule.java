@@ -43,7 +43,6 @@ import org.apache.calcite.util.Optionality;
 import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.Util;
 
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
@@ -64,6 +63,9 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 
 import static java.util.Objects.requireNonNull;
 
@@ -131,6 +133,13 @@ public final class AggregateExpandDistinctAggregatesRule
       return;
     }
 
+    if (!config.isUsingGroupingSets()
+        && aggregate.groupSets.size() > 1) {
+      // Grouping sets are not handled correctly
+      // when generating joins.
+      return;
+    }
+
     // Find all of the agg expressions. We use a LinkedHashSet to ensure determinism.
     final List<AggregateCall> aggCalls = aggregate.getAggCallList();
     // Find all aggregate calls with distinct
@@ -161,8 +170,7 @@ public final class AggregateExpandDistinctAggregatesRule
         .map(aggCall -> Pair.of(aggCall.getArgList(), aggCall.filterArg))
         .collect(Collectors.toCollection(LinkedHashSet::new));
 
-    Preconditions.checkState(distinctCallArgLists.size() > 0,
-        "containsDistinctCall lied");
+    checkState(!distinctCallArgLists.isEmpty(), "containsDistinctCall lied");
 
     // If all of the agg expressions are distinct and have the same
     // arguments then we can use a more efficient form.
@@ -282,7 +290,7 @@ public final class AggregateExpandDistinctAggregatesRule
 
     // In this case, we are assuming that there is a single distinct function.
     // So make sure that argLists is of size one.
-    Preconditions.checkArgument(argLists.size() == 1);
+    checkArgument(argLists.size() == 1);
 
     // For example,
     //    SELECT deptno, COUNT(*), SUM(bonus), MIN(DISTINCT sal)
@@ -733,6 +741,9 @@ public final class AggregateExpandDistinctAggregatesRule
       if (!aggCall.getArgList().equals(argList)) {
         continue;
       }
+      if (aggCall.filterArg != filterArg) {
+        continue;
+      }
 
       // Re-map arguments.
       final int argCount = aggCall.getArgList().size();
@@ -740,14 +751,10 @@ public final class AggregateExpandDistinctAggregatesRule
       for (Integer arg : aggCall.getArgList()) {
         newArgs.add(requireNonNull(sourceOf.get(arg), () -> "sourceOf.get(" + arg + ")"));
       }
-      final int newFilterArg =
-          aggCall.filterArg < 0 ? -1
-              : requireNonNull(sourceOf.get(aggCall.filterArg),
-                  () -> "sourceOf.get(" + aggCall.filterArg + ")");
       final AggregateCall newAggCall =
           AggregateCall.create(aggCall.getAggregation(), false,
               aggCall.isApproximate(), aggCall.ignoreNulls(), aggCall.rexList,
-              newArgs, newFilterArg, aggCall.distinctKeys, aggCall.collation,
+              newArgs, -1, aggCall.distinctKeys, aggCall.collation,
               aggCall.getType(), aggCall.getName());
       assert refs.get(i) == null;
       if (leftFields == null) {

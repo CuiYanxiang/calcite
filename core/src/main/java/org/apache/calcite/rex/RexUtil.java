@@ -1683,7 +1683,8 @@ public class RexUtil {
    *
    * @param source source type
    * @param target target type
-   * @return true iff the conversion is a loss-less cast
+   * @return 'true' when the conversion can certainly be determined to be loss-less cast,
+   *         but may return 'false' for some lossless casts.
    */
   @API(since = "1.22", status = API.Status.EXPERIMENTAL)
   public static boolean isLosslessCast(RelDataType source, RelDataType target) {
@@ -2851,6 +2852,29 @@ public class RexUtil {
         return new RexInputRef(ref.getIndex(), refType2);
       }
       throw new AssertionError("mismatched type " + ref + " " + rightType);
+    }
+  }
+
+  /** Visitor that collects all the top level SubQueries {@link RexSubQuery}
+   *  in a projection list of a given {@link Project}.*/
+  public static class SubQueryCollector extends RexVisitorImpl<Void> {
+    private List<RexSubQuery> subQueries;
+    private SubQueryCollector() {
+      super(true);
+      this.subQueries = new ArrayList<>();
+    }
+
+    @Override public Void visitSubQuery(RexSubQuery subQuery) {
+      subQueries.add(subQuery);
+      return null;
+    }
+
+    public static List<RexSubQuery> collect(Project project) {
+      SubQueryCollector subQueryCollector = new SubQueryCollector();
+      for (RexNode node : project.getProjects()) {
+        node.accept(subQueryCollector);
+      }
+      return subQueryCollector.subQueries;
     }
   }
 

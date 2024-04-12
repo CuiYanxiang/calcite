@@ -23,6 +23,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -106,7 +107,15 @@ public class ConstantExpression extends Expression {
         if (value instanceof BigDecimal) {
           bigDecimal = (BigDecimal) value;
         } else {
-          bigDecimal = BigDecimal.valueOf((Float) value);
+          float f = (Float) value;
+          if (f == Float.POSITIVE_INFINITY) {
+            return writer.append("Float.POSITIVE_INFINITY");
+          } else if (f == Float.NEGATIVE_INFINITY) {
+            return writer.append("Float.NEGATIVE_INFINITY");
+          } else if (Float.isNaN(f)) {
+            return writer.append("Float.NaN");
+          }
+          bigDecimal = BigDecimal.valueOf(f);
         }
         if (bigDecimal.precision() > 6) {
           return writer.append("Float.intBitsToFloat(")
@@ -118,7 +127,15 @@ public class ConstantExpression extends Expression {
         if (value instanceof BigDecimal) {
           bigDecimal = (BigDecimal) value;
         } else {
-          bigDecimal = BigDecimal.valueOf((Double) value);
+          double d = (Double) value;
+          if (d == Double.POSITIVE_INFINITY) {
+            return writer.append("Double.POSITIVE_INFINITY");
+          } else if (d == Double.NEGATIVE_INFINITY) {
+            return writer.append("Double.NEGATIVE_INFINITY");
+          } else if (Double.isNaN(d)) {
+            return writer.append("Double.NaN");
+          }
+          bigDecimal = BigDecimal.valueOf(d);
         }
         if (bigDecimal.precision() > 10) {
           return writer.append("Double.longBitsToDouble(")
@@ -191,6 +208,12 @@ public class ConstantExpression extends Expression {
     }
     if (value instanceof Set) {
       return writeSet(writer, (Set) value);
+    }
+    if (value instanceof Charset) {
+      writer.append("java.nio.charset.Charset.forName(\"");
+      writer.append(value);
+      writer.append("\")");
+      return writer;
     }
 
     Constructor constructor = matchingConstructor(value);
