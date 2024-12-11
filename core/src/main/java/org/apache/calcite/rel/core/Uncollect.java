@@ -35,6 +35,10 @@ import com.google.common.collect.ImmutableList;
 import java.util.Collections;
 import java.util.List;
 
+import static org.apache.calcite.util.Static.RESOURCE;
+
+import static java.util.Objects.requireNonNull;
+
 /**
  * Relational expression that unnests its input's columns into a relation.
  *
@@ -75,7 +79,7 @@ public class Uncollect extends SingleRel {
     super(cluster, traitSet, input);
     this.withOrdinality = withOrdinality;
     this.itemAliases = ImmutableList.copyOf(itemAliases);
-    assert deriveRowType() != null : "invalid child rowtype";
+    requireNonNull(deriveRowType(), "invalid child rowType");
   }
 
   /**
@@ -168,7 +172,9 @@ public class Uncollect extends SingleRel {
         builder.add(SqlUnnestOperator.MAP_VALUE_COLUMN_NAME, mapType.getValueType());
       } else {
         RelDataType ret = field.getType().getComponentType();
-        assert null != ret;
+        if (null == ret) {
+          throw RESOURCE.unnestArgument().ex();
+        }
 
         if (requireAlias) {
           builder.add(itemAliases.get(i), ret);

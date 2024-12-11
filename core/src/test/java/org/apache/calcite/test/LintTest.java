@@ -37,18 +37,18 @@ import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-
-import static com.google.common.collect.Iterables.getOnlyElement;
-
-import static org.apache.calcite.util.Util.filter;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -58,12 +58,17 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import static java.lang.Integer.parseInt;
+
 /** Various automated checks on the code and git history. */
 class LintTest {
   /** Pattern that matches "[CALCITE-12]" or "[CALCITE-1234]" followed by a
    * space. */
   private static final Pattern CALCITE_PATTERN =
       Pattern.compile("^(\\[CALCITE-[0-9]{1,4}][ ]).*");
+  private static final Path ROOT_PATH = Paths.get(System.getProperty("gradle.rootDir"));
+
+  private static final Map<String, String> TERMINOLOGY_MAP = new HashMap<>();
 
   @SuppressWarnings("Convert2MethodRef") // JDK 8 requires lambdas
   private Puffin.Program<GlobalState> makeProgram() {
@@ -76,7 +81,7 @@ class LintTest {
             line -> {
               final Matcher matcher = line.matcher(".* lint:skip ([0-9]+).*");
               if (matcher.matches()) {
-                int n = Integer.parseInt(matcher.group(1));
+                int n = parseInt(matcher.group(1));
                 line.state().skipToLine = line.fnr() + n;
               }
             })
@@ -358,6 +363,21 @@ class LintTest {
         empty());
   }
 
+  static {
+    TERMINOLOGY_MAP.put("mysql", "MySQL");
+    TERMINOLOGY_MAP.put("mssql", "MSSQL");
+    TERMINOLOGY_MAP.put("Mysql", "MySQL");
+    TERMINOLOGY_MAP.put("postgresql", "PostgreSQL");
+    TERMINOLOGY_MAP.put("hive", "Hive");
+    TERMINOLOGY_MAP.put("spark", "Spark");
+    TERMINOLOGY_MAP.put("arrow", "Arrow");
+    TERMINOLOGY_MAP.put("presto", "Presto");
+    TERMINOLOGY_MAP.put("oracle", "Oracle");
+    TERMINOLOGY_MAP.put("bigquery", "BigQuery");
+    TERMINOLOGY_MAP.put("redshift", "Redshift");
+    TERMINOLOGY_MAP.put("snowflake", "Snowflake");
+  }
+
   private static void checkMessage(String subject, String body,
       Consumer<String> consumer) {
     if (body.contains("Lint:skip")) {
@@ -392,15 +412,21 @@ class LintTest {
     if (subject2.matches("[a-z].*")) {
       consumer.accept("Message must start with upper-case letter");
     }
+
+    // Check for keywords that should be capitalized
+    for (Map.Entry<String, String> entry : TERMINOLOGY_MAP.entrySet()) {
+      String keyword = entry.getKey();
+      String correctCapitalization = entry.getValue();
+      if (subject2.matches(".*\\b" + keyword + "\\b.*")) {
+        consumer.accept("Message must be capitalized as '" + correctCapitalization + "'");
+      }
+    }
   }
 
   /** Ensures that the {@code contributors.yml} file is sorted by name. */
   @Test void testContributorsFileIsSorted() throws IOException {
     final ObjectMapper mapper = new YAMLMapper();
-    final List<File> files = TestUnsafe.getTextFiles();
-    final File contributorsFile =
-        getOnlyElement(
-            filter(files, f -> f.getName().equals("contributors.yml")));
+    final File contributorsFile = ROOT_PATH.resolve("site/_data/contributors.yml").toFile();
     JavaType listType =
         mapper.getTypeFactory()
             .constructCollectionType(List.class, Contributor.class);
@@ -416,12 +442,9 @@ class LintTest {
 
   /** Ensures that the {@code .mailmap} file is sorted. */
   @Test void testMailmapFile() {
-    final List<File> files = TestUnsafe.getTextFiles();
-    final File contributorsFile =
-        getOnlyElement(
-            filter(files, f -> f.getName().equals(".mailmap")));
+    final File mailmapFile = ROOT_PATH.resolve(".mailmap").toFile();
     final List<String> lines = new ArrayList<>();
-    forEachLineIn(contributorsFile, line -> {
+    forEachLineIn(mailmapFile, line -> {
       if (!line.startsWith("#")) {
         lines.add(line);
       }

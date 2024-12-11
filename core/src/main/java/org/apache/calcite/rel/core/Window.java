@@ -39,6 +39,7 @@ import org.apache.calcite.rex.RexLocalRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexSlot;
 import org.apache.calcite.rex.RexWindowBound;
+import org.apache.calcite.rex.RexWindowExclusion;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.ImmutableIntList;
@@ -54,7 +55,9 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 import java.util.AbstractList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
+
+import static java.util.Objects.hash;
+import static java.util.Objects.requireNonNull;
 
 /**
  * A relational expression representing a set of window aggregates.
@@ -90,8 +93,7 @@ public abstract class Window extends SingleRel implements Hintable {
       RelNode input, List<RexLiteral> constants, RelDataType rowType, List<Group> groups) {
     super(cluster, traitSet, input);
     this.constants = ImmutableList.copyOf(constants);
-    assert rowType != null;
-    this.rowType = rowType;
+    this.rowType = requireNonNull(rowType, "rowType");
     this.groups = ImmutableList.copyOf(groups);
     this.hints = ImmutableList.copyOf(hints);
   }
@@ -161,6 +163,9 @@ public abstract class Window extends SingleRel implements Hintable {
     for (Ord<Group> window : Ord.zip(groups)) {
       pw.item("window#" + window.i, window.e.toString());
     }
+    if (this.constants != null && this.constants.size() > 0) {
+      pw.item("constants", constants);
+    }
     return pw;
   }
 
@@ -223,8 +228,8 @@ public abstract class Window extends SingleRel implements Hintable {
   /**
    * Group of windowed aggregate calls that have the same window specification.
    *
-   * <p>The specification is defined by an upper and lower bound, and
-   * also has zero or more partitioning columns.
+   * <p>The specification is defined by an upper and lower bound, exclusion clause,
+   * and also has zero or more partitioning columns.
    *
    * <p>A window is either logical or physical. A physical window is measured
    * in terms of row count. A logical window is measured in terms of rows
@@ -247,6 +252,7 @@ public abstract class Window extends SingleRel implements Hintable {
     public final boolean isRows;
     public final RexWindowBound lowerBound;
     public final RexWindowBound upperBound;
+    public final RexWindowExclusion exclude;
     public final RelCollation orderKeys;
     private final String digest;
 
@@ -262,13 +268,15 @@ public abstract class Window extends SingleRel implements Hintable {
         boolean isRows,
         RexWindowBound lowerBound,
         RexWindowBound upperBound,
+        RexWindowExclusion exclude,
         RelCollation orderKeys,
         List<RexWinAggCall> aggCalls) {
-      this.keys = Objects.requireNonNull(keys, "keys");
+      this.keys = requireNonNull(keys, "keys");
       this.isRows = isRows;
-      this.lowerBound = Objects.requireNonNull(lowerBound, "lowerBound");
-      this.upperBound = Objects.requireNonNull(upperBound, "upperBound");
-      this.orderKeys = Objects.requireNonNull(orderKeys, "orderKeys");
+      this.lowerBound = requireNonNull(lowerBound, "lowerBound");
+      this.upperBound = requireNonNull(upperBound, "upperBound");
+      this.exclude = exclude;
+      this.orderKeys = requireNonNull(orderKeys, "orderKeys");
       this.aggCalls = ImmutableList.copyOf(aggCalls);
       this.digest = computeString();
     }
@@ -293,17 +301,14 @@ public abstract class Window extends SingleRel implements Hintable {
         buf.append(orderKeys);
       }
       if (orderKeys.getFieldCollations().isEmpty()
-          && lowerBound.isUnbounded()
-          && lowerBound.isPreceding()
-          && upperBound.isUnbounded()
-          && upperBound.isFollowing()) {
+          && lowerBound.isUnboundedPreceding()
+          && upperBound.isUnboundedFollowing()) {
         // skip bracket if no ORDER BY, and if bracket is the default,
         // "RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING",
         // which is equivalent to
         // "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING"
       } else if (!orderKeys.getFieldCollations().isEmpty()
-          && lowerBound.isUnbounded()
-          && lowerBound.isPreceding()
+          && lowerBound.isUnboundedPreceding()
           && upperBound.isCurrentRow()
           && !isRows) {
         // skip bracket if there is ORDER BY, and if bracket is the default,
@@ -319,6 +324,9 @@ public abstract class Window extends SingleRel implements Hintable {
         buf.append(lowerBound);
         buf.append(" and ");
         buf.append(upperBound);
+        if (exclude != RexWindowExclusion.EXCLUDE_NO_OTHER) {
+          buf.append(" ").append(exclude);
+        }
       }
       if (!aggCalls.isEmpty()) {
         if (buf.length() > i) {
@@ -358,7 +366,9 @@ public abstract class Window extends SingleRel implements Hintable {
     public boolean isAlwaysNonEmpty() {
       int lowerKey = lowerBound.getOrderKey();
       int upperKey = upperBound.getOrderKey();
-      return lowerKey > -1 && lowerKey <= upperKey;
+      return lowerKey > -1 && lowerKey <= upperKey
+            && (exclude == RexWindowExclusion.EXCLUDE_NO_OTHER
+               || exclude == RexWindowExclusion.EXCLUDE_TIES);
     }
 
     /**
@@ -377,7 +387,7 @@ public abstract class Window extends SingleRel implements Hintable {
         @Override public AggregateCall get(int index) {
           final RexWinAggCall aggCall = aggCalls.get(index);
           final SqlAggFunction op = (SqlAggFunction) aggCall.getOperator();
-          return AggregateCall.create(op, aggCall.distinct, false,
+          return AggregateCall.create(aggCall.getParserPosition(), op, aggCall.distinct, false,
               aggCall.ignoreNulls, ImmutableList.of(),
               getProjectOrdinals(aggCall.getOperands()),
               -1, null, RelCollations.EMPTY,
@@ -458,7 +468,7 @@ public abstract class Window extends SingleRel implements Hintable {
 
     @Override public int hashCode() {
       if (hash == 0) {
-        hash = Objects.hash(super.hashCode(), ordinal, distinct, ignoreNulls);
+        hash = hash(super.hashCode(), ordinal, distinct, ignoreNulls);
       }
       return hash;
     }

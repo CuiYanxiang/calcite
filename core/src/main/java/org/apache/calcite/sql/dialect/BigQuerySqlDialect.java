@@ -20,6 +20,7 @@ import org.apache.calcite.avatica.util.Casing;
 import org.apache.calcite.avatica.util.TimeUnit;
 import org.apache.calcite.config.Lex;
 import org.apache.calcite.config.NullCollation;
+import org.apache.calcite.rel.type.DelegatingTypeSystem;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeSystem;
 import org.apache.calcite.rex.RexCall;
@@ -55,6 +56,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
+import static java.lang.Long.parseLong;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -74,6 +76,15 @@ public class BigQuerySqlDialect extends SqlDialect {
       .withCaseSensitive(false);
 
   public static final SqlDialect DEFAULT = new BigQuerySqlDialect(DEFAULT_CONTEXT);
+
+  // The BigQuery type system differs from the DEFAULT type system in this respect,
+  // as evidenced by tests in big-query.iq
+  public static final RelDataTypeSystem TYPE_SYSTEM =
+      new DelegatingTypeSystem(RelDataTypeSystem.DEFAULT) {
+    @Override public boolean shouldConvertRaggedUnionTypesToVarying() {
+      return true;
+    }
+  };
 
   private static final List<String> RESERVED_KEYWORDS =
       ImmutableList.copyOf(
@@ -112,6 +123,10 @@ public class BigQuerySqlDialect extends SqlDialect {
     return super.supportsImplicitTypeCoercion(call)
             && RexUtil.isLiteral(call.getOperands().get(0), false)
             && !SqlTypeUtil.isNumeric(call.type);
+  }
+
+  @Override public RelDataTypeSystem getTypeSystem() {
+    return TYPE_SYSTEM;
   }
 
   @Override public boolean supportsApproxCountDistinct() {
@@ -229,7 +244,7 @@ public class BigQuerySqlDialect extends SqlDialect {
       writer.print("-");
     }
     try {
-      Long.parseLong(interval.getIntervalLiteral());
+      parseLong(interval.getIntervalLiteral());
     } catch (NumberFormatException e) {
       throw new RuntimeException("Only INT64 is supported as the interval value for BigQuery.");
     }

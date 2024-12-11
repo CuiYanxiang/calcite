@@ -24,6 +24,8 @@ import org.apache.calcite.plan.RelOptPredicateList;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeSystem;
+import org.apache.calcite.sql.fun.SqlInternalOperators;
+import org.apache.calcite.sql.fun.SqlLibraryOperators;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeName;
 
@@ -324,6 +326,21 @@ public abstract class RexProgramBuilderBase {
 
   protected RexNode add(RexNode n1, RexNode n2) {
     return rexBuilder.makeCall(SqlStdOperatorTable.PLUS, n1, n2);
+  }
+  protected RexNode greatest(RexNode... nodes) {
+    return rexBuilder.makeCall(SqlLibraryOperators.GREATEST, nodes);
+  }
+
+  protected RexNode least(RexNode... nodes) {
+    return rexBuilder.makeCall(SqlLibraryOperators.LEAST, nodes);
+  }
+
+  protected RexNode m2v(RexNode n) {
+    return rexBuilder.makeCall(SqlInternalOperators.M2V, n);
+  }
+
+  protected RexNode v2m(RexNode n) {
+    return rexBuilder.makeCall(SqlInternalOperators.V2M, n);
   }
 
   protected RexNode item(RexNode inputRef, RexNode literal) {

@@ -115,7 +115,6 @@ public abstract class QuidemTest {
     return m;
   }
 
-  @SuppressWarnings({"BetaApi", "UnstableApiUsage"})
   protected static Collection<String> data(String first) {
     // inUrl = "file:/home/fred/calcite/core/target/test-classes/sql/agg.iq"
     final URL inUrl = QuidemTest.class.getResource("/" + n2u(first));
@@ -288,8 +287,22 @@ public abstract class QuidemTest {
         return CalciteAssert.that()
             .with(CalciteAssert.Config.JDBC_SCOTT)
             .connect();
+      case "steelwheels":
+        return CalciteAssert.that()
+            .with(CalciteAssert.SchemaSpec.STEELWHEELS)
+            .connect();
+      case "jdbc_steelwheels":
+        return CalciteAssert.that()
+            .with(CalciteAssert.SchemaSpec.JDBC_STEELWHEELS)
+            .connect();
       case "post":
         return CalciteAssert.that()
+            .with(CalciteAssert.Config.REGULAR)
+            .with(CalciteAssert.SchemaSpec.POST)
+            .connect();
+      case "post-postgresql":
+        return CalciteAssert.that()
+            .with(CalciteConnectionProperty.FUN, "standard,postgresql")
             .with(CalciteAssert.Config.REGULAR)
             .with(CalciteAssert.SchemaSpec.POST)
             .connect();

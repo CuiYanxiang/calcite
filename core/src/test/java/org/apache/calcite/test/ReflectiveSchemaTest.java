@@ -63,11 +63,14 @@ import java.util.BitSet;
 import java.util.List;
 import java.util.Properties;
 
+import static org.apache.calcite.test.Matchers.isListOf;
+
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.arrayWithSize;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.hasToString;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -142,10 +145,10 @@ public class ReflectiveSchemaTest {
                             "toUpperCase")),
                     e))
             .toList();
-    assertEquals(1, list.size());
-    assertEquals(2, list.get(0).length);
-    assertEquals(150, list.get(0)[0]);
-    assertEquals("SEBASTIAN", list.get(0)[1]);
+    assertThat(list, hasSize(1));
+    assertThat(list.get(0), arrayWithSize(2));
+    assertThat(list.get(0)[0], is(150));
+    assertThat(list.get(0)[1], is("SEBASTIAN"));
   }
 
   @Test void testQueryProviderSingleColumn() throws Exception {
@@ -170,7 +173,7 @@ public class ReflectiveSchemaTest {
                     Expressions.field(e, "empid"),
                     e))
             .toList();
-    assertEquals(Arrays.asList(100, 200, 150, 110), list);
+    assertThat(list, isListOf(100, 200, 150, 110));
   }
 
   /**
@@ -255,16 +258,16 @@ public class ReflectiveSchemaTest {
     // "hr_emps" -> "hr"."emps", 4 rows
     ResultSet resultSet =
         statement.executeQuery("select * from \"s\".\"hr_emps\"");
-    assertEquals(4, count(resultSet));
+    assertThat(count(resultSet), is(4));
 
     // "s_emps" -> "s"."emps", 3 rows
     resultSet =
         statement.executeQuery("select * from \"s\".\"s_emps\"");
-    assertEquals(3, count(resultSet));
+    assertThat(count(resultSet), is(3));
 
     // "null_emps" -> "s"."emps", 3
     resultSet = statement.executeQuery("select * from \"s\".\"null_emps\"");
-    assertEquals(3, count(resultSet));
+    assertThat(count(resultSet), is(3));
     statement.close();
   }
 
@@ -308,8 +311,20 @@ public class ReflectiveSchemaTest {
             + "primitiveBoolean=true\n");
     with.query("select * from \"s\".\"everyTypes\"")
         .returns(""
-            + "primitiveBoolean=false; primitiveByte=0; primitiveChar=\u0000; primitiveShort=0; primitiveInt=0; primitiveLong=0; primitiveFloat=0.0; primitiveDouble=0.0; wrapperBoolean=false; wrapperByte=0; wrapperCharacter=\u0000; wrapperShort=0; wrapperInteger=0; wrapperLong=0; wrapperFloat=0.0; wrapperDouble=0.0; sqlDate=1970-01-01; sqlTime=00:00:00; sqlTimestamp=1970-01-01 00:00:00; utilDate=1970-01-01 00:00:00; string=1; bigDecimal=0\n"
-            + "primitiveBoolean=true; primitiveByte=127; primitiveChar=\uffff; primitiveShort=32767; primitiveInt=2147483647; primitiveLong=9223372036854775807; primitiveFloat=3.4028235E38; primitiveDouble=1.7976931348623157E308; wrapperBoolean=null; wrapperByte=null; wrapperCharacter=null; wrapperShort=null; wrapperInteger=null; wrapperLong=null; wrapperFloat=null; wrapperDouble=null; sqlDate=null; sqlTime=null; sqlTimestamp=null; utilDate=null; string=null; bigDecimal=null\n");
+            + "primitiveBoolean=false; primitiveByte=0; primitiveChar=\u0000; "
+            + "primitiveShort=0; primitiveInt=0; primitiveLong=0; primitiveFloat=0.0; "
+            + "primitiveDouble=0.0; wrapperBoolean=false; wrapperByte=0; wrapperCharacter=\u0000; "
+            + "wrapperShort=0; wrapperInteger=0; wrapperLong=0; wrapperFloat=0.0; "
+            + "wrapperDouble=0.0; sqlDate=1970-01-01; sqlTime=00:00:00; "
+            + "sqlTimestamp=1970-01-01 00:00:00; utilDate=1970-01-01 00:00:00; "
+            + "string=1; bigDecimal=0; list=[]\n"
+            + "primitiveBoolean=true; primitiveByte=127; primitiveChar=\uffff; "
+            + "primitiveShort=32767; primitiveInt=2147483647; primitiveLong=9223372036854775807; "
+            + "primitiveFloat=3.4028235E38; primitiveDouble=1.7976931348623157E308; "
+            + "wrapperBoolean=null; wrapperByte=null; wrapperCharacter=null; wrapperShort=null; "
+            + "wrapperInteger=null; wrapperLong=null; wrapperFloat=null; wrapperDouble=null; "
+            + "sqlDate=null; sqlTime=null; sqlTimestamp=null; utilDate=null; string=null; "
+            + "bigDecimal=null; list=null\n");
   }
 
   /** Tests NOT for nullable columns.
@@ -495,6 +510,8 @@ public class ReflectiveSchemaTest {
       return input.getTimestamp(1);
     case java.sql.Types.DECIMAL:
       return input.getBigDecimal(1);
+    case java.sql.Types.ARRAY:
+      return input.getArray(1);
     default:
       throw new AssertionError(type);
     }
@@ -944,7 +961,7 @@ public class ReflectiveSchemaTest {
     assertNotNull(table);
     Statistic statistic = table.getStatistic();
     assertNotNull(statistic);
-    assertEquals(4, statistic.getRowCount());
+    assertThat(statistic.getRowCount(), is(4D));
   }
 
   @Test void testCollectionFieldTableHasRowCount() {
@@ -953,6 +970,6 @@ public class ReflectiveSchemaTest {
     assertNotNull(table);
     Statistic statistic = table.getStatistic();
     assertNotNull(statistic);
-    assertEquals(2, statistic.getRowCount());
+    assertThat(statistic.getRowCount(), is(2D));
   }
 }

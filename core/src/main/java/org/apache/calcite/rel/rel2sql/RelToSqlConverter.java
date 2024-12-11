@@ -81,6 +81,7 @@ import org.apache.calcite.sql.SqlSelect;
 import org.apache.calcite.sql.SqlTableRef;
 import org.apache.calcite.sql.SqlUpdate;
 import org.apache.calcite.sql.SqlUtil;
+import org.apache.calcite.sql.SqlWindowTableFunction;
 import org.apache.calcite.sql.fun.SqlInternalOperators;
 import org.apache.calcite.sql.fun.SqlMinMaxAggFunction;
 import org.apache.calcite.sql.fun.SqlSingleValueAggFunction;
@@ -109,6 +110,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -117,7 +119,10 @@ import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
 import static org.apache.calcite.rex.RexLiteral.stringValue;
+import static org.apache.calcite.util.Util.last;
 
 import static java.util.Objects.requireNonNull;
 
@@ -397,7 +402,7 @@ public class RelToSqlConverter extends SqlImplementor
   public Result visit(Correlate e) {
     final Result leftResult =
         visitInput(e, 0)
-            .resetAlias(e.getCorrelVariable(), e.getRowType());
+            .resetAlias(e.getCorrelVariable(), e.getInput(0).getRowType());
     parseCorrelTable(e, leftResult);
     final Result rightResult = visitInput(e, 1);
     final SqlNode rightLateral =
@@ -438,9 +443,39 @@ public class RelToSqlConverter extends SqlImplementor
       final Result x = visitInput(e, 0, Clause.WHERE);
       parseCorrelTable(e, x);
       final Builder builder = x.builder(e);
+      if (input instanceof Join) {
+        final Context context = x.qualifiedContext();
+        if (selectListRequired(context)) {
+          final ImmutableList.Builder<SqlNode> selectList = ImmutableList.builder();
+          // Fieldnames are unique since they are created by SqlValidatorUtil.deriveJoinRowType()
+          final List<String> uniqueFieldNames = input.getRowType().getFieldNames();
+          for (int i = 0; i < context.fieldCount; i++) {
+            final SqlNode field = context.field(i);
+            final String fieldName = uniqueFieldNames.get(i);
+            selectList.add(
+                SqlStdOperatorTable.AS.createCall(POS, field,
+                new SqlIdentifier(fieldName, POS)));
+          }
+          builder.setSelect(new SqlNodeList(selectList.build(), POS));
+        }
+      }
       builder.setWhere(builder.context.toSql(null, e.getCondition()));
       return builder.result();
     }
+  }
+
+  private static boolean selectListRequired(Context context) {
+    Set<String> uniqueFieldNames = new HashSet<>();
+    for (SqlNode node : context.fieldList()) {
+      if (node instanceof SqlIdentifier) {
+        SqlIdentifier field = (SqlIdentifier) node;
+        if (uniqueFieldNames.contains(last(field.names))) {
+          return true;
+        }
+        uniqueFieldNames.add(last(field.names));
+      }
+    }
+    return false;
   }
 
   /** Visits a Project; called by {@link #dispatch} via reflection. */
@@ -1111,7 +1146,7 @@ public class RelToSqlConverter extends SqlImplementor
       final int nUpdateFiled = updateColumnList.size();
       if (nUpdateFiled != 0) {
         final SqlNodeList expressionList =
-            Util.last(selectList, nUpdateFiled).stream()
+            last(selectList, nUpdateFiled).stream()
                 .collect(SqlNodeList.toList());
         update =
             new SqlUpdate(POS, sqlTargetTable,
@@ -1286,13 +1321,31 @@ public class RelToSqlConverter extends SqlImplementor
 
   public Result visit(TableFunctionScan e) {
     final List<SqlNode> inputSqlNodes = new ArrayList<>();
+    final List<SqlNode> fieldNodes = new ArrayList<>();
+
+    final int fieldCount = e.getRowType().getFieldCount();
     final int inputSize = e.getInputs().size();
+
+    for (int i = 0; i < fieldCount; i++) {
+      fieldNodes.add(new SqlIdentifier(e.getRowType().getFieldNames().get(i), POS));
+    }
+
     for (int i = 0; i < inputSize; i++) {
       final Result x = visitInput(e, i);
       inputSqlNodes.add(x.asStatement());
     }
-    final Context context = tableFunctionScanContext(inputSqlNodes);
-    SqlNode callNode = context.toSql(null, e.getCall());
+
+    SqlNode callNode = null;
+    if (((RexCall) e.getCall()).getOperator() instanceof SqlWindowTableFunction) {
+      checkArgument(inputSqlNodes.size() == 1,
+          "Number of input sql nodes for SqlWindowTableFunction must be 1.");
+      final Context context = windowTableFunctionScanContext(inputSqlNodes.get(0), fieldNodes);
+      callNode = context.toSql(null, e.getCall());
+    } else {
+      final Context context = tableFunctionScanContext(inputSqlNodes);
+      callNode = context.toSql(null, e.getCall());
+    }
+
     // Convert to table function call, "TABLE($function_name(xxx))"
     SqlNode tableCall =
         new SqlBasicCall(SqlStdOperatorTable.COLLECTION_TABLE,
@@ -1344,17 +1397,14 @@ public class RelToSqlConverter extends SqlImplementor
   /** Stack frame. */
   private static class Frame {
     private final RelNode parent;
-    @SuppressWarnings("unused")
-    private final int ordinalInParent;
     private final RelNode r;
     private final boolean anon;
     private final boolean ignoreClauses;
     private final ImmutableSet<? extends Clause> expectedClauses;
 
-    Frame(RelNode parent, int ordinalInParent, RelNode r, boolean anon,
+    Frame(RelNode parent, int unusedOrdinalInParent, RelNode r, boolean anon,
         boolean ignoreClauses, Iterable<? extends Clause> expectedClauses) {
       this.parent = requireNonNull(parent, "parent");
-      this.ordinalInParent = ordinalInParent;
       this.r = requireNonNull(r, "r");
       this.anon = anon;
       this.ignoreClauses = ignoreClauses;

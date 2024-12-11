@@ -102,7 +102,6 @@ import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -454,11 +453,6 @@ class PlannerTest {
         + "  EnumerableValues(tuples=[[{ 2 }]])\n";
 
     checkUnionPruning("values(1)"
-            + " union all values(2)"
-            + " union all select * from (values(3)) where false",
-        plan, extraRules);
-
-    checkUnionPruning("values(1)"
             + " union all select * from (values(3)) where false"
             + " union all values(2)",
         plan, extraRules);
@@ -736,9 +730,10 @@ class PlannerTest {
     RelNode convert = planner.rel(validate).rel;
     RelDataType insertSourceType = convert.getInput(0).getRowType();
     String typeString = SqlTests.getTypeString(insertSourceType);
-    assertEquals("RecordType(INTEGER NOT NULL empid, INTEGER NOT NULL deptno, "
-        + "JavaType(class java.lang.String) name, REAL NOT NULL salary, "
-        + "INTEGER NOT NULL commission) NOT NULL", typeString);
+    assertThat(typeString,
+        is("RecordType(INTEGER NOT NULL empid, INTEGER NOT NULL deptno, "
+            + "JavaType(class java.lang.String) name, REAL NOT NULL salary, "
+            + "INTEGER NOT NULL commission) NOT NULL"));
   }
 
   /** Unit test that parses, validates, converts and plans. Planner is
@@ -829,8 +824,8 @@ class PlannerTest {
     assertThat(Util.toLinux(parse.toSqlString(hiveDialect).getSql()),
         equalTo("SELECT *\n"
             + "FROM (SELECT *\n"
-            + "FROM emps) T\n"
-            + "WHERE name LIKE '%e%'"));
+            + "FROM `emps`) `T`\n"
+            + "WHERE `name` LIKE '%e%'"));
   }
 
   /** Unit test that calls {@link Planner#transform} twice,

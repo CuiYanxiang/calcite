@@ -31,7 +31,6 @@ import org.apache.calcite.linq4j.tree.Expressions;
 import org.apache.calcite.linq4j.tree.ParameterExpression;
 import org.apache.calcite.linq4j.tree.Primitive;
 import org.apache.calcite.linq4j.tree.Statement;
-import org.apache.calcite.linq4j.tree.Types;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
@@ -269,22 +268,29 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
   /**
    * Used for safe operators that return null if an exception is thrown.
    */
-  private static Expression expressionHandlingSafe(Expression body, boolean safe) {
-    return safe ? safeExpression(body) : body;
+  private Expression expressionHandlingSafe(
+      Expression body, boolean safe, RelDataType targetType) {
+    return safe ? safeExpression(body, targetType) : body;
   }
 
-  private static Expression safeExpression(Expression body) {
+  private Expression safeExpression(Expression body, RelDataType targetType) {
     final ParameterExpression e_ =
         Expressions.parameter(Exception.class, new BlockBuilder().newName("e"));
 
-    return Expressions.call(
-        Expressions.lambda(
-            Expressions.block(
-                Expressions.tryCatch(
-                    Expressions.return_(null, body),
-                Expressions.catch_(e_,
-                    Expressions.return_(null, constant(null)))))),
-        BuiltInMethod.FUNCTION0_APPLY.method);
+    // The type received for the targetType is never nullable.
+    // But safe casts may return null
+    RelDataType nullableTargetType = typeFactory.createTypeWithNullability(targetType, true);
+    Expression result =
+        Expressions.call(
+            Expressions.lambda(
+                Expressions.block(
+                    Expressions.tryCatch(
+                        Expressions.return_(null, body),
+                        Expressions.catch_(e_,
+                            Expressions.return_(null, constant(null)))))),
+            BuiltInMethod.FUNCTION0_APPLY.method);
+    // FUNCTION0 always returns Object, so we need a cast to the target type
+    return EnumUtils.convert(result, typeFactory.getJavaClass(nullableTargetType));
   }
 
   Expression translateCast(
@@ -295,7 +301,7 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
       ConstantExpression format) {
     Expression convert = getConvertExpression(sourceType, targetType, operand, format);
     Expression convert2 = checkExpressionPadTruncate(convert, sourceType, targetType);
-    Expression convert3 = expressionHandlingSafe(convert2, safe);
+    Expression convert3 = expressionHandlingSafe(convert2, safe, targetType);
     return scaleValue(sourceType, targetType, convert3);
   }
 
@@ -443,15 +449,71 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
         return defaultExpression.get();
       }
 
+    case DECIMAL: {
+      int precision = targetType.getPrecision();
+      int scale = targetType.getScale();
+      if (precision != RelDataType.PRECISION_NOT_SPECIFIED
+          && scale != RelDataType.SCALE_NOT_SPECIFIED) {
+        if (sourceType.getFamily() == SqlTypeFamily.CHARACTER) {
+          return Expressions.call(
+              BuiltInMethod.CHAR_DECIMAL_CAST_ROUNDING_MODE.method,
+              operand,
+              Expressions.constant(precision),
+              Expressions.constant(scale),
+              Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
+        } else if (sourceType.getFamily() == SqlTypeFamily.INTERVAL_DAY_TIME) {
+          return Expressions.call(
+              BuiltInMethod.SHORT_INTERVAL_DECIMAL_CAST_ROUNDING_MODE.method,
+              operand,
+              Expressions.constant(precision),
+              Expressions.constant(scale),
+              Expressions.constant(sourceType.getSqlTypeName().getEndUnit().multiplier),
+              Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
+        } else if (sourceType.getFamily() == SqlTypeFamily.INTERVAL_YEAR_MONTH) {
+          return Expressions.call(
+              BuiltInMethod.LONG_INTERVAL_DECIMAL_CAST_ROUNDING_MODE.method,
+              operand,
+              Expressions.constant(precision),
+              Expressions.constant(scale),
+              Expressions.constant(sourceType.getSqlTypeName().getEndUnit().multiplier),
+              Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
+        } else if (sourceType.getSqlTypeName() == SqlTypeName.DECIMAL) {
+          // Cast from DECIMAL to DECIMAL, may adjust scale and precision.
+          return Expressions.call(
+              BuiltInMethod.DECIMAL_DECIMAL_CAST_ROUNDING_MODE.method,
+              operand,
+              Expressions.constant(precision),
+              Expressions.constant(scale),
+              Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
+        } else if (SqlTypeName.INT_TYPES.contains(sourceType.getSqlTypeName())) {
+          // Cast from INTEGER to DECIMAL, check for overflow
+          return Expressions.call(
+              BuiltInMethod.INTEGER_DECIMAL_CAST_ROUNDING_MODE.method,
+              operand,
+              Expressions.constant(precision),
+              Expressions.constant(scale),
+              Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
+        }  else if (SqlTypeName.APPROX_TYPES.contains(sourceType.getSqlTypeName())) {
+          // Cast from FLOAT/DOUBLE to DECIMAL
+          return Expressions.call(
+              BuiltInMethod.FP_DECIMAL_CAST_ROUNDING_MODE.method,
+              operand,
+              Expressions.constant(precision),
+              Expressions.constant(scale),
+              Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
+        }
+      }
+      return defaultExpression.get();
+    }
     case BIGINT:
     case INTEGER:
     case TINYINT:
     case SMALLINT: {
       if (SqlTypeName.NUMERIC_TYPES.contains(sourceType.getSqlTypeName())) {
         return Expressions.call(
-            BuiltInMethod.INTEGER_CAST.method,
+            BuiltInMethod.INTEGER_CAST_ROUNDING_MODE.method,
             Expressions.constant(Primitive.of(typeFactory.getJavaClass(targetType))),
-            operand);
+            operand, Expressions.constant(typeFactory.getTypeSystem().roundingMode()));
       }
       return defaultExpression.get();
     }
@@ -491,9 +553,12 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
             <= 0) {
           truncate = false;
         }
-        // If this is a widening cast, no need to pad.
-        if (SqlTypeUtil.comparePrecision(sourcePrecision, targetPrecision)
-            >= 0) {
+        // If this is a narrowing cast, no need to pad.
+        // However, conversion from VARCHAR(N) to CHAR(N) still requires padding,
+        // because VARCHAR(N) does not represent the spaces explicitly,
+        // whereas CHAR(N) does.
+        if ((SqlTypeUtil.comparePrecision(sourcePrecision, targetPrecision) >= 0)
+            && (sourceType.getSqlTypeName() != SqlTypeName.VARCHAR)) {
           pad = false;
         }
         // fall through
@@ -1061,7 +1126,9 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
 
   /** If an expression is a {@code NUMERIC} derived from an {@code INTERVAL},
    * scales it appropriately; returns the operand unchanged if the conversion
-   * is not from {@code INTERVAL} to {@code NUMERIC}. */
+   * is not from {@code INTERVAL} to {@code NUMERIC}.
+   * Does <b>not</b> scale values of type DECIMAL, these are expected
+   * to be already scaled. */
   private static Expression scaleValue(
       RelDataType sourceType,
       RelDataType targetType,
@@ -1069,6 +1136,9 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
     final SqlTypeFamily targetFamily = targetType.getSqlTypeName().getFamily();
     final SqlTypeFamily sourceFamily = sourceType.getSqlTypeName().getFamily();
     if (targetFamily == SqlTypeFamily.NUMERIC
+        // multiplyDivide cannot handle DECIMALs, but for DECIMAL
+        // destination types the result is already scaled.
+        && targetType.getSqlTypeName() != SqlTypeName.DECIMAL
         && (sourceFamily == SqlTypeFamily.INTERVAL_YEAR_MONTH
             || sourceFamily == SqlTypeFamily.INTERVAL_DAY_TIME)) {
       // Scale to the given field.
@@ -1453,20 +1523,17 @@ public class RexToLixTranslator implements RexVisitor<RexToLixTranslator.Result>
 
     // For numeric types, use java.lang.Number to prevent cast exception
     // when the parameter type differs from the target type
-    Expression argumentExpression =
-        EnumUtils.convert(
+    final Expression valueExpression = isNumeric
+        ? EnumUtils.convert(
+            EnumUtils.convert(
+                Expressions.call(root, BuiltInMethod.DATA_CONTEXT_GET.method,
+                    Expressions.constant("?" + dynamicParam.getIndex())),
+                java.lang.Number.class),
+            storageType)
+        : EnumUtils.convert(
             Expressions.call(root, BuiltInMethod.DATA_CONTEXT_GET.method,
                 Expressions.constant("?" + dynamicParam.getIndex())),
-            isNumeric ? java.lang.Number.class : storageType);
-
-    // Short-circuit if the expression evaluates to null. The cast
-    // may throw a NullPointerException as it calls methods on the
-    // object such as longValue().
-    Expression valueExpression =
-        Expressions.condition(
-            Expressions.equal(argumentExpression, Expressions.constant(null)),
-            Expressions.constant(null),
-            Types.castIfNecessary(storageType, argumentExpression));
+            storageType);
 
     final ParameterExpression valueVariable =
         Expressions.parameter(valueExpression.getType(),

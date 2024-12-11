@@ -75,8 +75,8 @@ import static java.util.Objects.requireNonNull;
  * {@link #commonTypeForBinaryComparison} for the detail strategies.
  */
 public abstract class AbstractTypeCoercion implements TypeCoercion {
-  protected SqlValidator validator;
-  protected RelDataTypeFactory factory;
+  protected final SqlValidator validator;
+  protected final RelDataTypeFactory factory;
 
   //~ Constructors -----------------------------------------------------------
 
@@ -274,18 +274,10 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       return false;
     }
 
-    // No need to cast between char and varchar.
+    // No need to cast between char and unlimited varchar.
     if (SqlTypeUtil.isCharacter(toType)
-        && SqlTypeUtil.isCharacter(fromType)) {
-      return false;
-    }
-
-    // No need to cast if the source type precedence list
-    // contains target type. i.e. do not cast from
-    // tinyint to int or int to bigint.
-    if (fromType.getPrecedenceList().containsType(toType)
-        && SqlTypeUtil.isIntType(fromType)
-        && SqlTypeUtil.isIntType(toType)) {
+        && SqlTypeUtil.isCharacter(fromType)
+        && toType.getPrecision() == RelDataType.PRECISION_NOT_SPECIFIED) {
       return false;
     }
 
@@ -378,10 +370,16 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
     }
     // If one type is with Null type name: returns the other.
     if (SqlTypeUtil.isNull(type1)) {
-      return type2;
+      if (SqlTypeUtil.isMap(type2) || SqlTypeUtil.isRow(type2) || SqlTypeUtil.isArray(type2)) {
+        return type2;
+      }
+      return factory.createTypeWithNullability(type2, type1.isNullable());
     }
     if (SqlTypeUtil.isNull(type2)) {
-      return type1;
+      if (SqlTypeUtil.isMap(type1) || SqlTypeUtil.isRow(type1) || SqlTypeUtil.isArray(type1)) {
+        return type1;
+      }
+      return factory.createTypeWithNullability(type1, type2.isNullable());
     }
     RelDataType resultType = null;
     if (SqlTypeUtil.isString(type1)
@@ -486,13 +484,20 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
   }
 
   /**
-   * Determines common type for a comparison operator when one operand is String type and the
-   * other is not. For date + timestamp operands, use timestamp as common type,
+   * Determines common type for a comparison operator.
+   * For date and timestamp operands, use timestamp as common type,
    * i.e. Timestamp(2017-01-01 00:00 ...) &gt; Date(2018) evaluates to be false.
    */
   @Override public @Nullable RelDataType commonTypeForBinaryComparison(
       @Nullable RelDataType type1, @Nullable RelDataType type2) {
     if (type1 == null || type2 == null) {
+      return null;
+    }
+
+    // this prevents the conversion between JavaType and normal RelDataType,
+    // as well as between JavaType and JavaType.
+    if (type1 instanceof RelDataTypeFactoryImpl.JavaType
+        || type2 instanceof RelDataTypeFactoryImpl.JavaType) {
       return null;
     }
 
@@ -503,32 +508,34 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       return null;
     }
 
-    // DATETIME + CHARACTER -> DATETIME
-    // REVIEW Danny 2019-09-23: There is some legacy redundant code in SqlToRelConverter
-    // that coerce Datetime and CHARACTER comparison.
+    if (SqlTypeUtil.sameNamedType(type1, type2)) {
+      return factory.leastRestrictive(ImmutableList.of(type1, type2));
+    }
+
+    // DATETIME < CHARACTER -> DATETIME
     if (SqlTypeUtil.isCharacter(type1) && SqlTypeUtil.isDatetime(type2)) {
-      return type2;
+      return factory.createTypeWithNullability(type2, type1.isNullable());
     }
 
     if (SqlTypeUtil.isDatetime(type1) && SqlTypeUtil.isCharacter(type2)) {
-      return type1;
+      return factory.createTypeWithNullability(type1, type2.isNullable());
     }
 
-    // DATE + TIMESTAMP -> TIMESTAMP
+    // DATE < TIMESTAMP -> TIMESTAMP
     if (SqlTypeUtil.isDate(type1) && SqlTypeUtil.isTimestamp(type2)) {
-      return type2;
+      return factory.createTypeWithNullability(type2, type1.isNullable());
     }
 
     if (SqlTypeUtil.isDate(type2) && SqlTypeUtil.isTimestamp(type1)) {
-      return type1;
+      return factory.createTypeWithNullability(type1, type2.isNullable());
     }
 
     if (SqlTypeUtil.isString(type1) && typeName2 == SqlTypeName.NULL) {
-      return type1;
+      return factory.createTypeWithNullability(type1, type2.isNullable());
     }
 
     if (typeName1 == SqlTypeName.NULL && SqlTypeUtil.isString(type2)) {
-      return type2;
+      return factory.createTypeWithNullability(type2, type1.isNullable());
     }
 
     if (SqlTypeUtil.isDecimal(type1) && SqlTypeUtil.isCharacter(type2)
@@ -550,28 +557,78 @@ public abstract class AbstractTypeCoercion implements TypeCoercion {
       return null;
     }
 
+    if (SqlTypeUtil.isString(type1) && SqlTypeUtil.isString(type2)) {
+      // Return the string with the larger precision
+      if (type1.getPrecision() == RelDataType.PRECISION_NOT_SPECIFIED) {
+        return factory.createTypeWithNullability(type1, type2.isNullable());
+      } else if (type2.getPrecision() == RelDataType.PRECISION_NOT_SPECIFIED) {
+        return factory.createTypeWithNullability(type2, type1.isNullable());
+      } else if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, type2.isNullable());
+      } else {
+        return factory.createTypeWithNullability(type2, type1.isNullable());
+      }
+    }
+
     // 1 > '1' will be coerced to 1 > 1.
     if (SqlTypeUtil.isAtomic(type1) && SqlTypeUtil.isCharacter(type2)) {
       if (SqlTypeUtil.isTimestamp(type1)) {
         return null;
       }
-      return type1;
+      return factory.createTypeWithNullability(type1, type2.isNullable());
     }
 
     if (SqlTypeUtil.isCharacter(type1) && SqlTypeUtil.isAtomic(type2)) {
       if (SqlTypeUtil.isTimestamp(type2)) {
         return null;
       }
-      return type2;
+      return factory.createTypeWithNullability(type2, type1.isNullable());
     }
 
     if (validator.config().conformance().allowLenientCoercion()) {
       if (SqlTypeUtil.isString(type1) && SqlTypeUtil.isArray(type2)) {
-        return type2;
+        return factory.createTypeWithNullability(type2, type1.isNullable());
       }
 
       if (SqlTypeUtil.isString(type2) && SqlTypeUtil.isArray(type1)) {
-        return type1;
+        return factory.createTypeWithNullability(type1, type2.isNullable());
+      }
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type1) && SqlTypeUtil.isApproximateNumeric(type2)) {
+      if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, type2.isNullable());
+      } else {
+        return factory.createTypeWithNullability(type2, type1.isNullable());
+      }
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type1) && SqlTypeUtil.isExactNumeric(type2)) {
+      return factory.createTypeWithNullability(type1, type2.isNullable());
+    }
+
+    if (SqlTypeUtil.isApproximateNumeric(type2) && SqlTypeUtil.isExactNumeric(type1)) {
+      return factory.createTypeWithNullability(type2, type1.isNullable());
+    }
+
+    if (SqlTypeUtil.isExactNumeric(type1) && SqlTypeUtil.isExactNumeric(type2)) {
+      if (SqlTypeUtil.isDecimal(type1)) {
+        // Use max precision
+        RelDataType result =
+            factory.createSqlType(type1.getSqlTypeName(),
+                Math.max(type1.getPrecision(), type2.getPrecision()), type1.getScale());
+        return factory.createTypeWithNullability(result, type1.isNullable() || type2.isNullable());
+      } else if (SqlTypeUtil.isDecimal(type2)) {
+        // Use max precision
+        RelDataType result =
+            factory.createSqlType(type2.getSqlTypeName(),
+                Math.max(type1.getPrecision(), type2.getPrecision()), type2.getScale());
+        return factory.createTypeWithNullability(result, type1.isNullable() || type2.isNullable());
+      }
+      if (type1.getPrecision() > type2.getPrecision()) {
+        return factory.createTypeWithNullability(type1, type2.isNullable());
+      } else {
+        return factory.createTypeWithNullability(type2, type1.isNullable());
       }
     }
 

@@ -26,7 +26,7 @@ import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.fun.SqlTrimFunction;
 import org.apache.calcite.sql.parser.SqlParserPos;
 
-import static org.apache.calcite.sql.fun.SqlLibraryOperators.REGEXP_REPLACE;
+import static org.apache.calcite.sql.fun.SqlLibraryOperators.REGEXP_REPLACE_3;
 
 import static java.util.Objects.requireNonNull;
 
@@ -58,9 +58,39 @@ public abstract class RelToSqlConverterUtil {
       final SqlCharStringLiteral blankLiteral =
           SqlLiteral.createCharString("", call.getParserPosition());
       final SqlNode[] trimOperands = new SqlNode[] { call.operand(2), regexNode, blankLiteral };
-      final SqlCall regexReplaceCall = REGEXP_REPLACE.createCall(SqlParserPos.ZERO, trimOperands);
+      final SqlCall regexReplaceCall = REGEXP_REPLACE_3.createCall(SqlParserPos.ZERO, trimOperands);
       regexReplaceCall.unparse(writer, leftPrec, rightPrec);
     }
+  }
+
+  /**
+   * Unparses Array and Map value constructor.
+   *
+   * <p>For example :
+   *
+   * <blockquote><pre>
+   * SELECT ARRAY[1, 2, 3] &rarr; SELECT ARRAY (1, 2, 3)
+   * SELECT MAP['k1', 'v1', 'k2', 'v2'] &rarr; SELECT MAP ('k1', 'v1', 'k2', 'v2')
+   * </pre></blockquote>
+   *
+   * @param writer writer
+   * @param call the call
+   */
+  public static void unparseSparkArrayAndMap(SqlWriter writer,
+      SqlCall call,
+      int leftPrec,
+      int rightPrec) {
+    final String keyword =
+        call.getKind() == SqlKind.ARRAY_VALUE_CONSTRUCTOR ? "array" : "map";
+
+    writer.keyword(keyword);
+
+    final SqlWriter.Frame frame = writer.startList("(", ")");
+    for (SqlNode operand : call.getOperandList()) {
+      writer.sep(",");
+      operand.unparse(writer, leftPrec, rightPrec);
+    }
+    writer.endList(frame);
   }
 
   /**

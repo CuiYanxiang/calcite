@@ -52,7 +52,6 @@ import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.SchemaVersion;
 import org.apache.calcite.schema.Statistic;
 import org.apache.calcite.schema.Table;
-import org.apache.calcite.schema.TableFunction;
 import org.apache.calcite.schema.Wrapper;
 import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.calcite.schema.impl.AbstractTable;
@@ -97,6 +96,7 @@ import com.google.common.collect.Lists;
 
 import net.hydromatic.foodmart.data.hsqldb.FoodmartHsqldb;
 import net.hydromatic.scott.data.hsqldb.ScottHsqldb;
+import net.hydromatic.steelwheels.data.hsqldb.SteelwheelsHsqldb;
 
 import org.apiguardian.api.API;
 import org.checkerframework.checker.nullness.qual.Nullable;
@@ -140,7 +140,6 @@ import static org.hamcrest.CoreMatchers.hasItem;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -206,6 +205,10 @@ public class CalciteAssert {
           return this;
         }
 
+        @Override public AssertThat with(SqlConformanceEnum conformance) {
+          return this;
+        }
+
         @Override public AssertThat with(
             ConnectionPostProcessor postProcessor) {
           return this;
@@ -253,7 +256,7 @@ public class CalciteAssert {
   }
 
   static Consumer<RelNode> checkRel(final String expected,
-      final AtomicInteger counter) {
+      final @Nullable AtomicInteger counter) {
     return relNode -> {
       if (counter != null) {
         counter.incrementAndGet();
@@ -271,7 +274,8 @@ public class CalciteAssert {
     };
   }
 
-  static Consumer<Throwable> checkValidationException(final String expected) {
+  static Consumer<Throwable> checkValidationException(
+      final @Nullable String expected) {
     return new Consumer<Throwable>() {
       @Override public void accept(@Nullable Throwable throwable) {
         assertNotNull(throwable, "Nothing was thrown");
@@ -287,10 +291,10 @@ public class CalciteAssert {
 
       private boolean isCorrectException(Throwable throwable) {
         return throwable instanceof SqlValidatorException
-                || throwable instanceof CalciteException;
+            || throwable instanceof CalciteException;
       }
 
-      private Exception containsCorrectException(Throwable root) {
+      private @Nullable Exception containsCorrectException(Throwable root) {
         Throwable currentCause = root;
         while (currentCause != null) {
           if (isCorrectException(currentCause)) {
@@ -478,8 +482,9 @@ public class CalciteAssert {
     return s -> {
       try {
         final String actual = Util.toLinux(toString(s));
-        assertEquals(count, countMatches(actual, expected),
-            () -> actual + " should have " + count + " occurrence of " + expected);
+        assertThat(actual + " should have " + count + " occurrence of "
+                + expected,
+            countMatches(actual, expected), is(count));
       } catch (SQLException e) {
         throw TestUtil.rethrow(e);
       }
@@ -503,7 +508,7 @@ public class CalciteAssert {
     return s -> {
       try {
         final String actual = typeString(s.getMetaData());
-        assertEquals(expected, actual);
+        assertThat(actual, is(expected));
       } catch (SQLException e) {
         throw TestUtil.rethrow(e);
       }
@@ -531,9 +536,9 @@ public class CalciteAssert {
       int limit,
       boolean materializationsEnabled,
       List<Pair<Hook, Consumer>> hooks,
-      Consumer<ResultSet> resultChecker,
-      Consumer<Integer> updateChecker,
-      Consumer<Throwable> exceptionChecker) {
+      @Nullable Consumer<ResultSet> resultChecker,
+      @Nullable Consumer<Integer> updateChecker,
+      @Nullable Consumer<Throwable> exceptionChecker) {
     try (Closer closer = new Closer()) {
       if (connection.isWrapperFor(CalciteConnection.class)) {
         final CalciteConnection calciteConnection =
@@ -605,9 +610,9 @@ public class CalciteAssert {
       int limit,
       boolean materializationsEnabled,
       List<Pair<Hook, Consumer>> hooks,
-      Consumer<ResultSet> resultChecker,
-      Consumer<Integer> updateChecker,
-      Consumer<Throwable> exceptionChecker,
+      @Nullable Consumer<ResultSet> resultChecker,
+      @Nullable Consumer<Integer> updateChecker,
+      @Nullable Consumer<Throwable> exceptionChecker,
       PreparedStatementConsumer consumer) {
     try (Closer closer = new Closer()) {
       if (connection.isWrapperFor(CalciteConnection.class)) {
@@ -690,8 +695,8 @@ public class CalciteAssert {
       String sql,
       boolean materializationsEnabled,
       List<Pair<Hook, Consumer>> hooks,
-      final Consumer<RelNode> convertChecker,
-      final Consumer<RelNode> substitutionChecker) {
+      final @Nullable Consumer<RelNode> convertChecker,
+      final @Nullable Consumer<RelNode> substitutionChecker) {
     try (Closer closer = new Closer()) {
       if (convertChecker != null) {
         closer.add(
@@ -752,8 +757,7 @@ public class CalciteAssert {
   /** Calls a non-static method via reflection. Useful for testing methods that
    * don't exist in certain versions of the JDK. */
   static Object call(Object o, String methodName, Object... args)
-      throws NoSuchMethodException, InvocationTargetException,
-      IllegalAccessException {
+      throws InvocationTargetException, IllegalAccessException {
     return method(o, methodName, args).invoke(o, args);
   }
 
@@ -804,6 +808,7 @@ public class CalciteAssert {
   static SchemaPlus addSchema_(SchemaPlus rootSchema, SchemaSpec schema) {
     final SchemaPlus foodmart;
     final SchemaPlus jdbcScott;
+    final SchemaPlus jdbcSteelwheels;
     final SchemaPlus scott;
     final ConnectionSpec cs;
     final DataSource dataSource;
@@ -813,7 +818,14 @@ public class CalciteAssert {
       return rootSchema.add(schema.schemaName,
           new ReflectiveSchema(new FoodmartSchema()));
     case JDBC_SCOTT:
-      cs = DatabaseInstance.HSQLDB.scott;
+      cs = requireNonNull(DatabaseInstance.HSQLDB.scott);
+      dataSource =
+          JdbcSchema.dataSource(cs.url, cs.driver, cs.username, cs.password);
+      return rootSchema.add(schema.schemaName,
+          JdbcSchema.create(rootSchema, schema.schemaName, dataSource,
+              cs.catalog, cs.schema));
+    case JDBC_STEELWHEELS:
+      cs = requireNonNull(DatabaseInstance.HSQLDB.steelwheels);
       dataSource =
           JdbcSchema.dataSource(cs.url, cs.driver, cs.username, cs.password);
       return rootSchema.add(schema.schemaName,
@@ -828,8 +840,10 @@ public class CalciteAssert {
               cs.catalog, cs.schema));
     case JDBC_FOODMART_WITH_LATTICE:
       foodmart = addSchemaIfNotExists(rootSchema, SchemaSpec.JDBC_FOODMART);
+      final CalciteSchema foodmartSchema =
+          requireNonNull(foodmart.unwrap(CalciteSchema.class));
       foodmart.add(schema.schemaName,
-          Lattice.create(foodmart.unwrap(CalciteSchema.class),
+          Lattice.create(foodmartSchema,
               "select 1 from \"foodmart\".\"sales_fact_1997\" as s\n"
                   + "join \"foodmart\".\"time_by_day\" as t using (\"time_id\")\n"
                   + "join \"foodmart\".\"customer\" as c using (\"customer_id\")\n"
@@ -852,6 +866,10 @@ public class CalciteAssert {
               OrdersStreamTableFactory.getRowList()));
       return scott;
 
+    case STEELWHEELS:
+      jdbcSteelwheels = addSchemaIfNotExists(rootSchema, SchemaSpec.JDBC_STEELWHEELS);
+      return rootSchema.add(schema.schemaName, new CloneSchema(jdbcSteelwheels));
+
     case TPCH:
       return rootSchema.add(schema.schemaName,
           new ReflectiveSchema(new TpchSchema()));
@@ -864,9 +882,12 @@ public class CalciteAssert {
           SpatialTypeFunctions.class.getName(), "*", true);
       ModelHandler.addFunctions(rootSchema, null, emptyPath,
           SqlSpatialTypeFunctions.class.getName(), "*", true);
-      rootSchema.add("ST_UNION", AggregateFunctionImpl.create(UnionOperation.class));
-      rootSchema.add("ST_ACCUM", AggregateFunctionImpl.create(AccumOperation.class));
-      rootSchema.add("ST_COLLECT", AggregateFunctionImpl.create(CollectOperation.class));
+      rootSchema.add("ST_UNION",
+          requireNonNull(AggregateFunctionImpl.create(UnionOperation.class)));
+      rootSchema.add("ST_ACCUM",
+          requireNonNull(AggregateFunctionImpl.create(AccumOperation.class)));
+      rootSchema.add("ST_COLLECT",
+          requireNonNull(AggregateFunctionImpl.create(CollectOperation.class)));
       final SchemaPlus s =
           rootSchema.add(schema.schemaName, new AbstractSchema());
       ModelHandler.addFunctions(s, "countries", emptyPath,
@@ -988,7 +1009,8 @@ public class CalciteAssert {
       // They redirect requests for SqlDialect and DataSource to the real JDBC
       // FOODMART, and this allows statistics queries to be executed.
       foodmart = addSchemaIfNotExists(rootSchema, SchemaSpec.JDBC_FOODMART);
-      final Wrapper salesTable = (Wrapper) foodmart.getTable("sales_fact_1997");
+      final Wrapper salesTable =
+          requireNonNull((Wrapper) foodmart.getTable("sales_fact_1997"));
       SchemaPlus fake =
           rootSchema.add(schema.schemaName, new AbstractSchema());
       fake.add("time_by_day", new AbstractTable() {
@@ -1027,12 +1049,14 @@ public class CalciteAssert {
     case AUX:
       SchemaPlus aux =
           rootSchema.add(schema.schemaName, new AbstractSchema());
-      TableFunction tableFunction =
-          TableFunctionImpl.create(Smalls.SimpleTableFunction.class, "eval");
-      aux.add("TBLFUN", tableFunction);
-      TableFunction tableFunctionIdentity =
-          TableFunctionImpl.create(Smalls.IdentityTableFunction.class, "eval");
-      aux.add("TBLFUN_IDENTITY", tableFunctionIdentity);
+      aux.add("TBLFUN",
+          requireNonNull(
+              TableFunctionImpl.create(Smalls.SimpleTableFunction.class,
+                  "eval")));
+      aux.add("TBLFUN_IDENTITY",
+          requireNonNull(
+              TableFunctionImpl.create(Smalls.IdentityTableFunction.class,
+                  "eval")));
       final String simpleSql = "select *\n"
           + "from (values\n"
           + "    ('ABC', 1),\n"
@@ -1082,7 +1106,7 @@ public class CalciteAssert {
    */
   public static void assertArrayEqual(
       String message, Object[] expected, Object[] actual) {
-    assertEquals(str(expected), str(actual), message);
+    assertThat(message, str(actual), is(str(expected)));
   }
 
   private static String str(Object[] objects) {
@@ -1194,6 +1218,11 @@ public class CalciteAssert {
       return with(CalciteConnectionProperty.LEX, lex);
     }
 
+    /** Sets the conformance property. */
+    public AssertThat with(SqlConformanceEnum conformance) {
+      return with(CalciteConnectionProperty.CONFORMANCE, conformance);
+    }
+
     /** Sets the default schema to a given schema. */
     public AssertThat withSchema(String name, Schema schema) {
       return with(ConnectionFactories.add(name, schema));
@@ -1292,8 +1321,8 @@ public class CalciteAssert {
       /** Method-local handler for the hook. */
       class Handler {
         void accept(Pair<FrameworkConfig, Holder<CalcitePrepare.Query>> pair) {
-          FrameworkConfig frameworkConfig = requireNonNull(pair.left);
-          Holder<CalcitePrepare.Query> queryHolder = requireNonNull(pair.right);
+          FrameworkConfig frameworkConfig = pair.left;
+          Holder<CalcitePrepare.Query> queryHolder = pair.right;
           final FrameworkConfig config =
               Frameworks.newConfigBuilder(frameworkConfig)
                   .context(
@@ -1403,7 +1432,7 @@ public class CalciteAssert {
     private final ImmutableList<Pair<Hook, Consumer>> hooks;
     private final @Nullable PreparedStatementConsumer consumer;
 
-    private String plan;
+    private @Nullable String plan;
 
     private AssertQuery(ConnectionFactory connectionFactory, String sql,
         ImmutableList<Pair<Hook, Consumer>> hooks, int limit,
@@ -1428,7 +1457,7 @@ public class CalciteAssert {
     }
 
     /** Performs an action using a connection, and closes the connection
-     * afterwards. */
+     * afterward. */
     public final AssertQuery withConnection(Consumer<Connection> f) {
       try (Connection c = createConnection()) {
         f.accept(c);
@@ -1525,7 +1554,7 @@ public class CalciteAssert {
      *
      * @param optionalMessage An optional message to check for in the output stacktrace
      * */
-    public AssertQuery failsAtValidation(String optionalMessage) {
+    public AssertQuery failsAtValidation(@Nullable String optionalMessage) {
       return withConnection(connection ->
         assertQuery(connection, sql, limit, materializationsEnabled,
             hooks, null, null, checkValidationException(optionalMessage)));
@@ -1580,7 +1609,8 @@ public class CalciteAssert {
     public AssertQuery substitutionMatches(
         final Consumer<RelNode> checker) {
       return withConnection(connection ->
-        assertPrepare(connection, sql, materializationsEnabled, hooks, null, checker));
+        assertPrepare(connection, sql, materializationsEnabled, hooks, null,
+            checker));
     }
 
     public AssertQuery explainContains(String expected) {
@@ -1688,7 +1718,8 @@ public class CalciteAssert {
 
     public final AssertQuery explainMatches(String extra,
         Consumer<ResultSet> checker) {
-      return returns("explain plan " + extra + "for " + sql, checker);
+      return returns("explain plan " + requireNonNull(extra, "extra")
+          + "for " + sql, checker);
     }
 
     public AssertQuery planContains(String expected) {
@@ -1699,9 +1730,10 @@ public class CalciteAssert {
       return planContains(checkUpdateCount(count), JavaSql.fromSql(expected));
     }
 
-    private AssertQuery planContains(Consumer<Integer> checkUpdate,
+    private AssertQuery planContains(@Nullable Consumer<Integer> checkUpdate,
         JavaSql expected) {
       ensurePlan(checkUpdate);
+      requireNonNull(plan, "plan");
       if (expected.sql != null) {
         final List<String> planSqls = JavaSql.fromJava(plan).extractSql();
         final String planSql;
@@ -1721,7 +1753,7 @@ public class CalciteAssert {
       return planContains(null, JavaSql.fromSql(expected));
     }
 
-    private void ensurePlan(Consumer<Integer> checkUpdate) {
+    private void ensurePlan(@Nullable Consumer<Integer> checkUpdate) {
       if (plan != null) {
         return;
       }
@@ -1965,31 +1997,45 @@ public class CalciteAssert {
    * tests against a different database. (hsqldb is the default.) */
   public enum DatabaseInstance {
     HSQLDB(
-        new ConnectionSpec(FoodmartHsqldb.URI, "FOODMART", "FOODMART",
-            "org.hsqldb.jdbcDriver", "foodmart"),
-        new ConnectionSpec(ScottHsqldb.URI, ScottHsqldb.USER,
-            ScottHsqldb.PASSWORD, "org.hsqldb.jdbcDriver", "SCOTT")),
+        new ConnectionSpec(FoodmartHsqldb.URI,
+            FoodmartHsqldb.USER,
+            FoodmartHsqldb.PASSWORD,
+            "org.hsqldb.jdbcDriver",
+            "foodmart"),
+        new ConnectionSpec(ScottHsqldb.URI,
+            ScottHsqldb.USER,
+            ScottHsqldb.PASSWORD,
+            "org.hsqldb.jdbcDriver",
+            "SCOTT"),
+        new ConnectionSpec(SteelwheelsHsqldb.URI,
+            SteelwheelsHsqldb.USER,
+            SteelwheelsHsqldb.PASSWORD,
+            "org.hsqldb.jdbcDriver",
+            "steelwheels")),
     H2(
         new ConnectionSpec("jdbc:h2:" + CalciteSystemProperty.TEST_DATASET_PATH.value()
             + "/h2/target/foodmart;user=foodmart;password=foodmart",
-            "foodmart", "foodmart", "org.h2.Driver", "foodmart"), null),
+            "foodmart", "foodmart", "org.h2.Driver", "foodmart"), null, null),
     MYSQL(
         new ConnectionSpec("jdbc:mysql://localhost/foodmart", "foodmart",
-            "foodmart", "com.mysql.jdbc.Driver", "foodmart"), null),
+            "foodmart", "com.mysql.jdbc.Driver", "foodmart"), null, null),
     ORACLE(
         new ConnectionSpec("jdbc:oracle:thin:@localhost:1521:XE", "foodmart",
-            "foodmart", "oracle.jdbc.OracleDriver", "FOODMART"), null),
+            "foodmart", "oracle.jdbc.OracleDriver", "FOODMART"), null, null),
     POSTGRESQL(
         new ConnectionSpec(
             "jdbc:postgresql://localhost/foodmart?user=foodmart&password=foodmart&searchpath=foodmart",
-            "foodmart", "foodmart", "org.postgresql.Driver", "foodmart"), null);
+            "foodmart", "foodmart", "org.postgresql.Driver", "foodmart"), null, null);
 
     public final ConnectionSpec foodmart;
-    public final ConnectionSpec scott;
+    public final @Nullable ConnectionSpec scott;
+    public final @Nullable ConnectionSpec steelwheels;
 
-    DatabaseInstance(ConnectionSpec foodmart, ConnectionSpec scott) {
+    DatabaseInstance(ConnectionSpec foodmart, @Nullable ConnectionSpec scott,
+        @Nullable ConnectionSpec steelwheels) {
       this.foodmart = foodmart;
       this.scott = scott;
+      this.steelwheels = steelwheels;
     }
   }
 
@@ -2006,6 +2052,8 @@ public class CalciteAssert {
     JDBC_SCOTT("JDBC_SCOTT"),
     SCOTT("scott"),
     SCOTT_WITH_TEMPORAL("scott_temporal"),
+    JDBC_STEELWHEELS("JDBC_STEELWHEELS"),
+    STEELWHEELS("steelwheels"),
     TPCH("tpch"),
     BLANK("BLANK"),
     LINGUAL("SALES"),
@@ -2109,9 +2157,9 @@ public class CalciteAssert {
     private static final String END = "\"";
 
     private final String java;
-    private final String sql;
+    private final @Nullable String sql;
 
-    JavaSql(String java, String sql) {
+    JavaSql(String java, @Nullable String sql) {
       this.java = requireNonNull(java, "java");
       this.sql = sql;
     }
@@ -2191,6 +2239,7 @@ public class CalciteAssert {
        *            n12: STRUCT<c: BIGINT>
        *          >,
        *      n2: STRUCT<d: BIGINT>,
+       *      xs: ARRAY<BIGINT>,
        *      e: BIGINT)
        * }</pre>
        */
@@ -2204,6 +2253,7 @@ public class CalciteAssert {
                     .add("n12", typeFactory.builder().add("c", bigint).build())
                     .build())
             .add("n2", typeFactory.builder().add("d", bigint).build())
+            .add("xs", typeFactory.createArrayType(bigint, -1))
             .add("e", bigint)
             .build();
       }
@@ -2217,7 +2267,7 @@ public class CalciteAssert {
       }
 
       @Override public Schema.TableType getJdbcTableType() {
-        return null;
+        return TableType.TABLE;
       }
 
       @Override public boolean isRolledUp(String column) {
@@ -2239,7 +2289,7 @@ public class CalciteAssert {
       return ImmutableSet.of("myTable");
     }
 
-    @Override public RelProtoDataType getType(String name) {
+    @Override public @Nullable RelProtoDataType getType(String name) {
       return null;
     }
 
@@ -2249,14 +2299,14 @@ public class CalciteAssert {
 
     @Override public Collection<org.apache.calcite.schema.Function>
       getFunctions(String name) {
-      return null;
+      return ImmutableList.of();
     }
 
     @Override public Set<String> getFunctionNames() {
       return ImmutableSet.of();
     }
 
-    @Override public Schema getSubSchema(String name) {
+    @Override public @Nullable Schema getSubSchema(String name) {
       return null;
     }
 
@@ -2266,7 +2316,7 @@ public class CalciteAssert {
 
     @Override public Expression getExpression(@Nullable SchemaPlus parentSchema,
         String name) {
-      return null;
+      throw new UnsupportedOperationException("getExpression");
     }
 
     @Override public boolean isMutable() {
@@ -2274,7 +2324,7 @@ public class CalciteAssert {
     }
 
     @Override public Schema snapshot(SchemaVersion version) {
-      return null;
+      throw new UnsupportedOperationException("snapshot");
     }
   };
 }

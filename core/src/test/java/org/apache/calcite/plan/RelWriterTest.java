@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 package org.apache.calcite.plan;
+
 import org.apache.calcite.adapter.java.ReflectiveSchema;
 import org.apache.calcite.avatica.util.TimeUnit;
 import org.apache.calcite.plan.volcano.VolcanoPlanner;
@@ -114,6 +115,7 @@ import static java.util.Objects.requireNonNull;
 /**
  * Unit test for {@link org.apache.calcite.rel.externalize.RelJson}.
  */
+@SuppressWarnings("ConcatenationWithEmptyString")
 class RelWriterTest {
   public static final String XX = "{\n"
       + "  \"rels\": [\n"
@@ -521,11 +523,11 @@ class RelWriterTest {
         Frameworks.withPlanner((cluster, relOptSchema, rootSchema) -> {
           rootSchema.add("hr",
               new ReflectiveSchema(new HrSchema()));
+          final RelOptTable table =
+              requireNonNull(
+                  relOptSchema.getTableForMember(Arrays.asList("hr", "emps")));
           LogicalTableScan scan =
-              LogicalTableScan.create(cluster,
-                  relOptSchema.getTableForMember(
-                      Arrays.asList("hr", "emps")),
-                  ImmutableList.of());
+              LogicalTableScan.create(cluster, table, ImmutableList.of());
           final RexBuilder rexBuilder = cluster.getRexBuilder();
           LogicalFilter filter =
               LogicalFilter.create(scan,
@@ -568,11 +570,11 @@ class RelWriterTest {
         Frameworks.withPlanner((cluster, relOptSchema, rootSchema) -> {
           rootSchema.add("hr",
               new ReflectiveSchema(new HrSchema()));
+          final RelOptTable table =
+              requireNonNull(
+                  relOptSchema.getTableForMember(Arrays.asList("hr", "emps")));
           LogicalTableScan scan =
-              LogicalTableScan.create(cluster,
-                  relOptSchema.getTableForMember(
-                      Arrays.asList("hr", "emps")),
-                  ImmutableList.of());
+              LogicalTableScan.create(cluster, table, ImmutableList.of());
           final RexBuilder rexBuilder = cluster.getRexBuilder();
           final RelDataType bigIntType =
               cluster.getTypeFactory().createSqlType(SqlTypeName.BIGINT);
@@ -738,6 +740,61 @@ class RelWriterTest {
         .assertThatPlan(isLinux(expected));
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6703">[CALCITE-6703]
+   * RelJson cannot handle timestamps prior to 1970-01-25 20:31:23.648</a>. */
+  @Test void testJsonToRexForTimestamp() {
+    // Below Integer.MAX_VALUE
+    final String timestampRepresentedAsInt = "{\n"
+          + "  \"literal\": 2129400000,\n"
+          + "  \"type\": {\n"
+          + "    \"type\": \"TIMESTAMP\",\n"
+          + "    \"nullable\": false\n"
+          + "  }\n"
+          + "}\n";
+    // Above Integer.MAX_VALUE
+    final String timestampRepresentedAsLong = "{\n"
+          + "  \"literal\": 3129400000,\n"
+          + "  \"type\": {\n"
+          + "    \"type\": \"TIMESTAMP\",\n"
+          + "    \"nullable\": false\n"
+          + "  }\n"
+          + "}\n";
+
+    // These timestamps were verified using BigQuery's UNIX_MILLIS function.
+    assertThatReadExpressionResult(timestampRepresentedAsInt, is("1970-01-25 15:30:00"));
+    assertThatReadExpressionResult(timestampRepresentedAsLong, is("1970-02-06 05:16:40"));
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6703">[CALCITE-6703]
+   * RelJson cannot handle timestamps prior to 1970-01-25 20:31:23.648</a>. */
+  @Test void testJsonToRexForTimestampWithLocalTimeZone() {
+    // Below Integer.MAX_VALUE
+    final String timestampWithLocalTzRepresentedAsInt = "{\n"
+          + "  \"literal\": 2129400000,\n"
+          + "  \"type\": {\n"
+          + "    \"type\": \"TIMESTAMP_WITH_LOCAL_TIME_ZONE\",\n"
+          + "    \"nullable\": false\n"
+          + "  }\n"
+          + "}\n";
+    // Above Integer.MAX_VALUE
+    final String timestampWithLocalTzRepresentedAsLong = "{\n"
+          + "  \"literal\": 3129400000,\n"
+          + "  \"type\": {\n"
+          + "    \"type\": \"TIMESTAMP_WITH_LOCAL_TIME_ZONE\",\n"
+          + "    \"nullable\": false\n"
+          + "  }\n"
+          + "}\n";
+
+    // These timestamps were verified using BigQuery's UNIX_MILLIS function.
+    assertThatReadExpressionResult(timestampWithLocalTzRepresentedAsInt,
+          is("1970-01-25 15:30:00:TIMESTAMP_WITH_LOCAL_TIME_ZONE(0)"));
+    assertThatReadExpressionResult(timestampWithLocalTzRepresentedAsLong,
+          is("1970-02-06 05:16:40:TIMESTAMP_WITH_LOCAL_TIME_ZONE(0)"));
+  }
+
+
   @Test void testJsonToRex() {
     // Test simple literal without inputs
     final String jsonString1 = "{\n"
@@ -878,6 +935,18 @@ class RelWriterTest {
       assertThat(result, isLinux(expected));
     }
 
+    RexNode betweenDoubles =
+        rexBuilder.makeBetween(b.literal(45),
+            b.literal(20.0000000000000049),
+            b.literal(30.0000000000000049));
+    consumer.accept(betweenDoubles);
+
+    RexNode betweenDecimal =
+        rexBuilder.makeBetween(b.literal(45),
+            b.literal(BigDecimal.valueOf(20.0)),
+            b.literal(BigDecimal.valueOf(30.0)));
+    consumer.accept(betweenDecimal);
+
     RexNode between =
         rexBuilder.makeBetween(b.literal(45),
             b.literal(20),
@@ -956,7 +1025,7 @@ class RelWriterTest {
     rel.explain(jsonWriter);
     final String relJson = jsonWriter.asString();
     String s = deserializeAndDump(getSchema(rel), relJson, format);
-    String expected = null;
+    final String expected;
     switch (format) {
     case TEXT:
       expected = ""
@@ -975,6 +1044,8 @@ class RelWriterTest {
           + "$5\\n\" [label=\"0\"]\n"
           + "}\n";
       break;
+    default:
+      throw new AssertionError();
     }
     assertThat(s, isLinux(expected));
   }
@@ -1055,12 +1126,8 @@ class RelWriterTest {
   }
 
   /** Test case for
-   * <a href="https://issues.apache.org/jira/browse/CALCITE-5607">[CALCITE-5607]</a>
-   *
-   * <p>Before the fix, RelJson.toRex would throw an ArrayIndexOutOfBounds error
-   * when deserializing MINUS_DATE due to type inference requiring 3 operands.
-   *
-   * <p>The solution is to add in 'type' when serializing to JSON.
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-5607">[CALCITE-5607]
+   * Datetime MINUS throws ArrayIndexOutOfBounds error when serializing toRex</a>.
    */
   @Test void testDeserializeMinusDateOperator() {
     final FrameworkConfig config = RelBuilderTest.config().build();
@@ -1220,8 +1287,7 @@ class RelWriterTest {
     final Function<RelBuilder, RelNode> relFn = b ->
         mockCountOver(b, "EMP", ImmutableList.of(), ImmutableList.of("DEPTNO"));
     final String expected = ""
-        + "LogicalProject($f0=[COUNT() OVER (ORDER BY $7 NULLS LAST "
-        + "ROWS UNBOUNDED PRECEDING)])\n"
+        + "LogicalProject($f0=[COUNT() OVER (ORDER BY $7 NULLS LAST)])\n"
         + "  LogicalTableScan(table=[[scott, EMP]])\n";
     relFn(relFn)
         .assertThatPlan(isLinux(expected));
@@ -1359,7 +1425,7 @@ class RelWriterTest {
             return super.visit(scan);
           }
         });
-    return schemaHolder.get();
+    return requireNonNull(schemaHolder.get());
   }
 
   /**
@@ -1431,7 +1497,7 @@ class RelWriterTest {
     for (String orderKeyName : orderKeyNames) {
       orderKeys.add(new RexFieldCollation(builder.field(orderKeyName), ImmutableSet.of()));
     }
-    final RelNode rel = builder
+    return builder
         .project(
             rexBuilder.makeOver(
                 type,
@@ -1441,9 +1507,8 @@ class RelWriterTest {
                 ImmutableList.copyOf(orderKeys),
                 RexWindowBounds.UNBOUNDED_PRECEDING,
                 RexWindowBounds.CURRENT_ROW,
-                true, true, false, false, false))
+                false, true, false, false, false))
         .build();
-    return rel;
   }
 
   @Test void testHashDistributionWithoutKeys() {
@@ -1466,11 +1531,10 @@ class RelWriterTest {
       final RelDataTypeFactory typeFactory = relBuilder.getTypeFactory();
       final RelDataType intType = typeFactory.createSqlType(SqlTypeName.INTEGER);
       final RexDynamicParam dynamicParam = rexBuilder.makeDynamicParam(intType, 0);
-      final RelNode relNode = relBuilder
+      return relBuilder
           .scan("EMP")
           .sortLimit(null, dynamicParam, relBuilder.fields(RelCollations.EMPTY))
           .build();
-      return relNode;
     };
 
     final String expectedJson = "{\n"
@@ -1532,10 +1596,14 @@ class RelWriterTest {
         .project(b.fields(), ImmutableList.of(), true)
             .let(b2 -> {
               final RelNode input = b2.build();
-              final RelOptTable table = input.getInput(0).getTable();
+              final RelOptTable table =
+                  requireNonNull(input.getInput(0).getTable());
+              final Prepare.CatalogReader schema =
+                  (Prepare.CatalogReader)
+                      requireNonNull(table.getRelOptSchema());
               final LogicalTableModify modify =
                   LogicalTableModify.create(table,
-                      (Prepare.CatalogReader) table.getRelOptSchema(),
+                      schema,
                       input,
                       TableModify.Operation.INSERT,
                       null,
@@ -1560,10 +1628,14 @@ class RelWriterTest {
                 b.equals(b.field("JOB"), b.literal("c")))
             .let(b2 -> {
               final RelNode filter = b2.build();
-              final RelOptTable table = filter.getInput(0).getTable();
+              final RelOptTable table =
+                  requireNonNull(filter.getInput(0).getTable());
+              final Prepare.CatalogReader schema =
+                  (Prepare.CatalogReader)
+                      requireNonNull(table.getRelOptSchema());
               final LogicalTableModify modify =
                   LogicalTableModify.create(table,
-                      (Prepare.CatalogReader) table.getRelOptSchema(),
+                      schema,
                       filter,
                       TableModify.Operation.UPDATE,
                       ImmutableList.of("ENAME"),
@@ -1587,10 +1659,14 @@ class RelWriterTest {
             .filter(b.equals(b.field("JOB"), b.literal("c")))
             .let(b2 -> {
               final RelNode filter = b2.build();
-              final RelOptTable table = filter.getInput(0).getTable();
+              final RelOptTable table =
+                  requireNonNull(filter.getInput(0).getTable());
+              final Prepare.CatalogReader schema =
+                  (Prepare.CatalogReader)
+                      requireNonNull(table.getRelOptSchema());
               LogicalTableModify modify =
                   LogicalTableModify.create(table,
-                      (Prepare.CatalogReader) table.getRelOptSchema(),
+                      schema,
                       filter,
                       TableModify.Operation.DELETE,
                       null,
@@ -1651,9 +1727,12 @@ class RelWriterTest {
               //     INSERT VALUES (0, 'x', 'x', 0, '20200501 10:00:00',
               //         0, 0, 0, 0)
               final RelNode project = b.build();
+              final Prepare.CatalogReader schema =
+                  (Prepare.CatalogReader)
+                      requireNonNull(emp.get().getRelOptSchema());
               LogicalTableModify modify =
                   LogicalTableModify.create(emp.get(),
-                      (Prepare.CatalogReader) emp.get().getRelOptSchema(),
+                      schema,
                       project,
                       TableModify.Operation.MERGE,
                       ImmutableList.of("ENAME"),
@@ -1720,6 +1799,7 @@ class RelWriterTest {
       return this;
     }
 
+    @SuppressWarnings("UnusedReturnValue")
     Fixture assertThatPlan(Matcher<String> matcher) {
       final FrameworkConfig config = RelBuilderTest.config().build();
       final RelBuilder b = RelBuilder.create(config);

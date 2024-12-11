@@ -55,6 +55,22 @@ public abstract class SqlTypeTransforms {
 
   /**
    * Parameter type-inference transform strategy where a derived type is
+   * transformed into the same type, but nullable if and only if the type
+   * is a ARRAY type and contains nullable elements.
+   */
+  public static final SqlTypeTransform TO_NULLABLE_IF_ARRAY_CONTAINS_NULLABLE =
+      (opBinding, typeToTransform) -> {
+        RelDataType relDataType = opBinding.getOperandType(0);
+        if (SqlTypeUtil.isArray(relDataType)) {
+          RelDataType componentRelDataType = relDataType.getComponentType();
+          assert componentRelDataType != null;
+          return opBinding.getTypeFactory().createTypeWithNullability(typeToTransform,
+              componentRelDataType.isNullable());
+        }
+        return typeToTransform;
+      };
+  /**
+   * Parameter type-inference transform strategy where a derived type is
    * transformed into the same type, but nullable if and only if all of a call's
    * operands are nullable.
    */
@@ -244,6 +260,14 @@ public abstract class SqlTypeTransforms {
       (opBinding, typeToTransform) ->
           TO_NULLABLE.transformType(opBinding, TO_ARRAY.transformType(opBinding, typeToTransform));
 
+  /**
+   * Parameter type-inference transform strategy that wraps a given type in a nullabe array.
+   */
+  public static final SqlTypeTransform TO_ARRAY_FORCE_NULLABLE =
+      (opBinding, typeToTransform) ->
+          FORCE_NULLABLE.transformType(opBinding,
+              TO_ARRAY.transformType(opBinding, typeToTransform));
+
   /** Parameter type-inference transform that transforms {@code T} to
    * {@code MEASURE<T>} for some type T. */
   public static final SqlTypeTransform TO_MEASURE =
@@ -254,7 +278,15 @@ public abstract class SqlTypeTransforms {
    * {@code T} for some type T. Inverse of {@link #TO_MEASURE}. */
   public static final SqlTypeTransform FROM_MEASURE =
       (opBinding, typeToTransform) ->
-          ((MeasureSqlType) typeToTransform).types.get(0);
+          SqlTypeUtil.fromMeasure(opBinding.getTypeFactory(), typeToTransform);
+
+  /** Parameter type-inference transform that transforms {@code MEASURE<T>} to
+   * {@code T} for some type T, and does nothing to other types. */
+  public static final SqlTypeTransform FROM_MEASURE_IF =
+      (opBinding, typeToTransform) ->
+          SqlTypeUtil.isMeasure(typeToTransform)
+              ? ((MeasureSqlType) typeToTransform).types.get(0)
+              : typeToTransform;
 
   /**
    * Parameter type-inference transform strategy that wraps a given type in an array or

@@ -39,6 +39,10 @@ public class SqlDelegatingConformance implements SqlConformance {
     return delegate.allowCharLiteralAlias();
   }
 
+  @Override public boolean isSupportedDualTable() {
+    return delegate.isSupportedDualTable();
+  }
+
   @Override public boolean isGroupByAlias() {
     return delegate.isGroupByAlias();
   }
@@ -87,10 +91,6 @@ public class SqlDelegatingConformance implements SqlConformance {
     return delegate.isMinusAllowed();
   }
 
-  @Override public boolean isRegexReplaceCaptureGroupDollarIndexed() {
-    return delegate.isRegexReplaceCaptureGroupDollarIndexed();
-  }
-
   @Override public boolean isApplyAllowed() {
     return delegate.isApplyAllowed();
   }
@@ -107,6 +107,9 @@ public class SqlDelegatingConformance implements SqlConformance {
     return delegate.allowNiladicParentheses();
   }
 
+  @Override public boolean allowNiladicConstantWithoutParentheses() {
+    return delegate.allowNiladicConstantWithoutParentheses();
+  }
   @Override public boolean allowExplicitRowValueConstructor() {
     return delegate.allowExplicitRowValueConstructor();
   }
@@ -153,5 +156,9 @@ public class SqlDelegatingConformance implements SqlConformance {
 
   @Override public boolean allowLenientCoercion() {
     return delegate.allowLenientCoercion();
+  }
+
+  @Override public boolean checkedArithmetic() {
+    return delegate.checkedArithmetic();
   }
 }

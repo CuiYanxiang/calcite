@@ -29,6 +29,7 @@ import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.fun.SqlArrayValueConstructor;
+import org.apache.calcite.sql.fun.SqlLibraryOperators;
 import org.apache.calcite.sql.fun.SqlMapValueConstructor;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlParserPos;
@@ -145,6 +146,11 @@ public class PrestoSqlDialect extends SqlDialect {
       case MAP_VALUE_CONSTRUCTOR:
         unparseMapValue(writer, call, leftPrec, rightPrec);
         break;
+      case CHAR_LENGTH:
+        SqlCall lengthCall = SqlLibraryOperators.LENGTH
+            .createCall(SqlParserPos.ZERO, call.getOperandList());
+        super.unparseCall(writer, lengthCall, leftPrec, rightPrec);
+        break;
       default:
         // Current impl is same with Postgresql.
         PostgresqlSqlDialect.DEFAULT.unparseCall(writer, call, leftPrec, rightPrec);
@@ -161,7 +167,7 @@ public class PrestoSqlDialect extends SqlDialect {
   /**
    * change map open/close symbol from default [] to ().
    */
-  private void unparseMapValue(SqlWriter writer, SqlCall call,
+  private static void unparseMapValue(SqlWriter writer, SqlCall call,
       int leftPrec, int rightPrec) {
     call = convertMapValueCall(call);
     writer.keyword(call.getOperator().getName());
@@ -174,10 +180,11 @@ public class PrestoSqlDialect extends SqlDialect {
   }
 
   /**
-   * Convert Presto MapValue call
-   * From MAP['k1','v1','k2','v2'] to MAP[ARRAY['k1', 'k2'],ARRAY['v1', 'v2']].
+   * Converts a Presto MapValue call
+   * from {@code MAP['k1', 'v1', 'k2', 'v2']}
+   * to {@code MAP[ARRAY['k1', 'k2'], ARRAY['v1', 'v2']]}.
    */
-  private SqlCall convertMapValueCall(SqlCall call) {
+  private static SqlCall convertMapValueCall(SqlCall call) {
     boolean unnestMap = call.operandCount() > 0
         && call.getOperandList().stream().allMatch(operand -> operand instanceof SqlLiteral);
     if (!unnestMap) {
