@@ -1697,7 +1697,13 @@ public class SqlStdOperatorTable extends ReflectiveSqlOperatorTable {
   public static final SqlFunction SUBSTRING = new SqlSubstringFunction();
 
   /** The {@code REPLACE(string, search, replace)} function. Not standard SQL,
-   * but in Oracle and Postgres. */
+   * but in Oracle, PostgreSQL and Microsoft SQL Server.
+   *
+   * <p>REPLACE behaves a little different in Microsoft SQL Server,
+   * whose search pattern is case-insensitive during matching.
+   *
+   * <p>For example, {@code REPLACE(('ciAao', 'a', 'ciao'))} returns "ciAciaoo" in both
+   * Oracle and PostgreSQL, but returns "ciciaociaoo" in Microsoft SQL Server. */
   public static final SqlFunction REPLACE =
       SqlBasicFunction.create("REPLACE", ReturnTypes.VARCHAR_NULLABLE,
           OperandTypes.STRING_STRING_STRING, SqlFunctionCategory.STRING);
@@ -1934,6 +1940,16 @@ public class SqlStdOperatorTable extends ReflectiveSqlOperatorTable {
       SqlBasicFunction.create("PI", ReturnTypes.DOUBLE, OperandTypes.NILADIC,
           SqlFunctionCategory.NUMERIC)
           .withSyntax(SqlSyntax.FUNCTION_ID_CONSTANT);
+
+  /** The {@code TYPEOF} function. */
+  public static final SqlFunction TYPEOF =
+      SqlBasicFunction.create("TYPEOF", ReturnTypes.VARCHAR, OperandTypes.VARIANT,
+              SqlFunctionCategory.STRING);
+
+  /** The {@code VARIANTNULL} function. */
+  public static final SqlFunction VARIANTNULL =
+      SqlBasicFunction.create("VARIANTNULL", ReturnTypes.VARIANT, OperandTypes.NILADIC,
+          SqlFunctionCategory.SYSTEM);
 
   /** {@code FIRST} function to be used within {@code MATCH_RECOGNIZE}. */
   public static final SqlFunction FIRST =
@@ -2226,7 +2242,7 @@ public class SqlStdOperatorTable extends ReflectiveSqlOperatorTable {
    * <p>MAP is not standard SQL.
    */
   public static final SqlOperator ITEM =
-      new SqlItemOperator("ITEM", OperandTypes.ARRAY_OR_MAP, 1, true);
+      new SqlItemOperator("ITEM", OperandTypes.ARRAY_OR_MAP_OR_VARIANT, 1, true);
 
   /**
    * The ARRAY Value Constructor. e.g. "<code>ARRAY[1, 2, 3]</code>".
@@ -2820,6 +2836,17 @@ public class SqlStdOperatorTable extends ReflectiveSqlOperatorTable {
       return floor ? SqlLibraryOperators.FLOOR_BIG_QUERY : SqlLibraryOperators.CEIL_BIG_QUERY;
     } else {
       return floor ? SqlStdOperatorTable.FLOOR : SqlStdOperatorTable.CEIL;
+    }
+  }
+
+  /** Returns the operator for standard {@code CONVERT} and Oracle's {@code CONVERT}
+   * with the given library. */
+  public static SqlOperator getConvertFuncByConformance(SqlConformance conformance) {
+    if (SqlConformanceEnum.ORACLE_10 == conformance
+        || SqlConformanceEnum.ORACLE_12 == conformance) {
+      return SqlLibraryOperators.CONVERT_ORACLE;
+    } else {
+      return SqlStdOperatorTable.CONVERT;
     }
   }
 }

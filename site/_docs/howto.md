@@ -39,8 +39,8 @@ Unpack the source distribution `.tar.gz` file,
 then build using Gradle:
 
 {% highlight bash %}
-$ tar xvfz apache-calcite-1.38.0-src.tar.gz
-$ cd apache-calcite-1.38.0-src
+$ tar xvfz apache-calcite-1.40.0-src.tar.gz
+$ cd apache-calcite-1.40.0-src
 $ gradle build
 {% endhighlight %}
 
@@ -874,7 +874,6 @@ your key to the keyservers used by Nexus, see above.
 * Make sure that the following files do not occur in the source
   distros: `KEYS`, `gradlew`, `gradlew.bat`, `gradle-wrapper.jar`,
   `gradle-wrapper.properties`
-* Make sure that there is no `KEYS` file in the source distros
 * In each .jar (for example
   `core/build/libs/calcite-core-X.Y.Z.jar` and
   `mongodb/build/libs/calcite-mongodb-X.Y.Z-sources.jar`), check
@@ -1041,9 +1040,10 @@ a new version (e.g., X.Y+1.Z) for the next release. In order to make the [releas
 reflect state of the next release, change the fixVersion in the [JIRA filter powering the dashboard](https://issues.apache.org/jira/issues/?filter=12346388)
 and save the changes.
 
-Increase the `calcite.version` value in `/gradle.properties`, commit and push
+Increase the `calcite.version` value in `/gradle.properties`, and update `JdbcTest.testVersion` accordingly.
+Ensure that build and test pass and then commit and push
 the change with the message "Prepare for next development iteration"
-(see [ed1470a](https://github.com/apache/calcite/commit/ed1470a3ea53a78c667354a5ec066425364eca73) as a reference)
+(see [ed1470a](https://github.com/apache/calcite/commit/ed1470a3ea53a78c667354a5ec066425364eca73) as a reference).
 
 Re-open the `main` branch. Send an email to [dev@calcite.apache.org](mailto:dev@calcite.apache.org) notifying
 that `main` code freeze is over and commits can resume.

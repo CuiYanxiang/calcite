@@ -114,7 +114,7 @@ import static java.util.Objects.requireNonNull;
  * select a from R1 where a &gt; 7
  *   &rarr; "a &gt; 7" is pulled up from the Projection.
  * select a + 1 from R1 where a + 1 &gt; 7
- *   &rarr; "a + 1 gt; 7" is not pulled up
+ *   &rarr; "a + 1 &gt; 7" is not pulled up
  * </pre>
  *
  * <li> There are several restrictions on Joins:
@@ -194,15 +194,13 @@ public class RelMdPredicates
     final List<RexNode> projectPullUpPredicates = new ArrayList<>();
 
     ImmutableBitSet.Builder columnsMappedBuilder = ImmutableBitSet.builder();
-    Mapping m =
-        Mappings.create(MappingType.PARTIAL_FUNCTION,
-            input.getRowType().getFieldCount(),
-            project.getRowType().getFieldCount());
-
+    // The keys are field indexes (RexInputRef) that appear in the input of project,
+    // values are sets of field indexes (RexInputRef) that appear in project.
+    Map<Integer, BitSet> equivalence = new HashMap<>();
     for (Ord<RexNode> expr : Ord.zip(project.getProjects())) {
       if (expr.e instanceof RexInputRef) {
         int sIdx = ((RexInputRef) expr.e).getIndex();
-        m.set(sIdx, expr.i);
+        equivalence.computeIfAbsent(sIdx, k -> new BitSet()).set(expr.i);
         columnsMappedBuilder.set(sIdx);
       } else if (RexUtil.isConstant(expr.e)) {
         // Project can also generate constants (including NULL). We need to
@@ -218,8 +216,21 @@ public class RelMdPredicates
     for (RexNode r : inputInfo.pulledUpPredicates) {
       RexNode r2 = projectPredicate(rexBuilder, input, r, columnsMapped);
       if (!r2.isAlwaysTrue()) {
-        r2 = r2.accept(new RexPermuteInputsShuttle(m, input));
-        projectPullUpPredicates.add(r2);
+        ImmutableBitSet fields = RelOptUtil.InputFinder.bits(r2);
+        // If r2 cannot find input (such as SubQuery),
+        // it will directly return without adjusting mapping.
+        if (fields.isEmpty()) {
+          projectPullUpPredicates.add(r2);
+          continue;
+        }
+        JoinConditionBasedPredicateInference.ExprsItr exprsItr =
+            new JoinConditionBasedPredicateInference.ExprsItr(fields,
+                equivalence, input.getRowType().getFieldCount(),
+                project.getRowType().getFieldCount());
+        while (exprsItr.hasNext()) {
+          RexNode r3 = r2.accept(new RexPermuteInputsShuttle(exprsItr.next(), input));
+          projectPullUpPredicates.add(r3);
+        }
       }
     }
     return RelOptPredicateList.of(rexBuilder, projectPullUpPredicates);
@@ -308,18 +319,11 @@ public class RelMdPredicates
     final RexBuilder rexBuilder = filter.getCluster().getRexBuilder();
     final RelOptPredicateList inputInfo = mq.getPulledUpPredicates(input);
 
-    // Simplify condition using RexSimplify.
-    final RexNode condition = filter.getCondition();
-    final RexExecutor executor =
-        Util.first(filter.getCluster().getPlanner().getExecutor(), RexUtil.EXECUTOR);
-    final RexSimplify simplify = new RexSimplify(rexBuilder, RelOptPredicateList.EMPTY, executor);
-    final RexNode simplifiedCondition = simplify.simplify(condition);
-
     return Util.first(inputInfo, RelOptPredicateList.EMPTY)
         .union(rexBuilder,
             RelOptPredicateList.of(rexBuilder,
                 RexUtil.retainDeterministic(
-                    RelOptUtil.conjunctions(simplifiedCondition))));
+                    RelOptUtil.conjunctions(filter.getCondition()))));
   }
 
   /**
@@ -799,12 +803,12 @@ public class RelMdPredicates
           Mappings.createShiftMapping(nSysFields + nFieldsLeft + nFieldsRight,
               0, nSysFields + nFieldsLeft, nFieldsRight);
       final RexPermuteInputsShuttle rightPermute =
-          new RexPermuteInputsShuttle(rightMapping, joinRel);
+          new RexPermuteInputsShuttle(rightMapping, true, joinRel.getRight());
       Mappings.TargetMapping leftMapping =
           Mappings.createShiftMapping(nSysFields + nFieldsLeft, 0, nSysFields,
               nFieldsLeft);
       final RexPermuteInputsShuttle leftPermute =
-          new RexPermuteInputsShuttle(leftMapping, joinRel);
+          new RexPermuteInputsShuttle(leftMapping, true, joinRel.getLeft());
       final List<RexNode> leftInferredPredicates = new ArrayList<>();
       final List<RexNode> rightInferredPredicates = new ArrayList<>();
 
@@ -895,7 +899,9 @@ public class RelMdPredicates
       if (fields.cardinality() == 0) {
         return Collections.emptyList();
       }
-      return () -> new ExprsItr(fields);
+      return () -> new ExprsItr(fields, equivalence,
+          nSysFields + nFieldsLeft + nFieldsRight,
+          nSysFields + nFieldsLeft + nFieldsRight);
     }
 
     private static boolean checkTarget(ImmutableBitSet inferringFields,
@@ -973,15 +979,17 @@ public class RelMdPredicates
      * b + b + e
      * </pre>
      */
-    class ExprsItr implements Iterator<Mapping> {
+    static class ExprsItr implements Iterator<Mapping> {
       final int[] columns;
       final BitSet[] columnSets;
       final int[] iterationIdx;
       @Nullable Mapping nextMapping;
       boolean firstCall;
+      int sourceCount;
+      int targetCount;
 
-      @SuppressWarnings("JdkObsolete")
-      ExprsItr(ImmutableBitSet fields) {
+      ExprsItr(ImmutableBitSet fields, Map<Integer, BitSet> equivalence,
+          int sourceCount, int targetCount) {
         nextMapping = null;
         columns = new int[fields.cardinality()];
         columnSets = new BitSet[fields.cardinality()];
@@ -997,6 +1005,8 @@ public class RelMdPredicates
           iterationIdx[j] = 0;
         }
         firstCall = true;
+        this.sourceCount = sourceCount;
+        this.targetCount = targetCount;
       }
 
       @Override public boolean hasNext() {
@@ -1040,8 +1050,7 @@ public class RelMdPredicates
       private void initializeMapping() {
         nextMapping =
             Mappings.create(MappingType.PARTIAL_FUNCTION,
-                nSysFields + nFieldsLeft + nFieldsRight,
-                nSysFields + nFieldsLeft + nFieldsRight);
+                sourceCount, targetCount);
         for (int i = 0; i < columnSets.length; i++) {
           BitSet c = columnSets[i];
           int t = c.nextSetBit(iterationIdx[i]);

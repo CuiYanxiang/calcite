@@ -2862,9 +2862,9 @@ select MGR, count(distinct DEPTNO, JOB), MIN(SAL), MAX(SAL) from "scott".emp gro
 
 !ok
 
-EnumerableAggregate(group=[{0}], EXPR$1=[COUNT($1, $2) FILTER $5], EXPR$2=[MIN($3) FILTER $6], EXPR$3=[MIN($4) FILTER $6])
-  EnumerableCalc(expr#0..5=[{inputs}], expr#6=[0], expr#7=[=($t5, $t6)], expr#8=[3], expr#9=[=($t5, $t8)], MGR=[$t1], DEPTNO=[$t2], JOB=[$t0], EXPR$2=[$t3], EXPR$3=[$t4], $g_0=[$t7], $g_3=[$t9])
-    EnumerableAggregate(group=[{2, 3, 7}], groups=[[{2, 3, 7}, {3}]], EXPR$2=[MIN($5)], EXPR$3=[MAX($5)], $g=[GROUPING($3, $7, $2)])
+EnumerableAggregate(group=[{1}], EXPR$1=[COUNT($2, $0) FILTER $5], EXPR$2=[MIN($3) FILTER $6], EXPR$3=[MIN($4) FILTER $6])
+  EnumerableCalc(expr#0..5=[{inputs}], expr#6=[0], expr#7=[=($t5, $t6)], expr#8=[5], expr#9=[=($t5, $t8)], proj#0..4=[{exprs}], $g_0=[$t7], $g_5=[$t9])
+    EnumerableAggregate(group=[{2, 3, 7}], groups=[[{2, 3, 7}, {3}]], EXPR$2=[MIN($5)], EXPR$3=[MAX($5)], $g=[GROUPING($2, $3, $7)])
       EnumerableTableScan(table=[[scott, EMP]])
 !plan
 
@@ -3120,7 +3120,7 @@ group by dept.deptno;
 
 !ok
 EnumerableAggregate(group=[{0}], S=[COLLECT($1) WITHIN GROUP ([1 DESC])], S1=[COLLECT($1) WITHIN GROUP ([2])], S2=[COLLECT($1) WITHIN GROUP ([1]) FILTER $3])
-  EnumerableCalc(expr#0..3=[{inputs}], expr#4=[1], expr#5=[CAST($t2):DECIMAL(10, 2)], expr#6=[2000.00:DECIMAL(10, 2)], expr#7=[>($t5, $t6)], expr#8=[IS TRUE($t7)], DEPTNO=[$t0], SAL=[$t2], $f2=[$t4], $f3=[$t8])
+  EnumerableCalc(expr#0..3=[{inputs}], expr#4=[1], expr#5=[CAST($t2):DECIMAL(12, 2)], expr#6=[2000.00:DECIMAL(12, 2)], expr#7=[>($t5, $t6)], expr#8=[IS TRUE($t7)], DEPTNO=[$t0], SAL=[$t2], $f2=[$t4], $f3=[$t8])
     EnumerableHashJoin(condition=[=($0, $3)], joinType=[inner])
       EnumerableCalc(expr#0..2=[{inputs}], DEPTNO=[$t0])
         EnumerableTableScan(table=[[scott, DEPT]])
@@ -3814,5 +3814,87 @@ select distinct sum(deptno + '1') as deptsum from dept order by 1;
 (1 row)
 
 !ok
+
+# [CALCITE-6839] The SUM function sometimes throws overflow exceptions due
+# to incorrect return types
+!use scott-spark
+# Test TINYINT Type
+select sum(mgr) from emp;
++--------+
+| EXPR$0 |
++--------+
+| 100611 |
++--------+
+(1 row)
+
+!ok
+
+EnumerableAggregate(group=[{}], EXPR$0=[SUM($3)])
+  EnumerableTableScan(table=[[scott, EMP]])
+!plan
+
+# Test Float Type
+select sum(cast(mgr as float)) from emp;
++----------+
+| EXPR$0   |
++----------+
+| 100611.0 |
++----------+
+(1 row)
+
+!ok
+
+EnumerableAggregate(group=[{}], EXPR$0=[SUM($0)])
+  EnumerableCalc(expr#0..7=[{inputs}], expr#8=[CAST($t3):FLOAT], $f0=[$t8])
+    EnumerableTableScan(table=[[scott, EMP]])
+!plan
+
+# [CALCITE-6834] In query that applies COALESCE to nullable SUM, EnumerableProjectToCalcRule throws AssertionError
+# sum(mgr) return TINYINT, coalesce(sum(mgr),0) return INTEGER, so need CAST
+!use scott
+select coalesce(sum(mgr),0) as m
+from emp;
+java.sql.SQLException: Error while executing SQL "select coalesce(sum(mgr),0) as m
+from emp": Value 38835 out of range
+!error
+EnumerableCalc(expr#0=[{inputs}], expr#1=[CAST($t0):INTEGER NOT NULL], M=[$t1])
+  EnumerableAggregate(group=[{}], agg#0=[$SUM0($3)])
+    EnumerableTableScan(table=[[scott, EMP]])
+!plan
+
+# sum(cast(mgr as int)) return INTEGER, coalesce(sum(cast(mgr as int)),0) return INTEGER, so don't need CAST
+select coalesce(sum(cast(mgr as int)),0) as m
+from emp;
++--------+
+| M      |
++--------+
+| 100611 |
++--------+
+(1 row)
+
+!ok
+
+EnumerableAggregate(group=[{}], agg#0=[$SUM0($0)])
+  EnumerableCalc(expr#0..7=[{inputs}], expr#8=[CAST($t3):INTEGER], $f0=[$t8])
+    EnumerableTableScan(table=[[scott, EMP]])
+!plan
+
+# sum(mgr) return INTEGER, coalesce(sum(mgr),0) return BIGINT, so need CAST
+select coalesce(sum(cast(mgr as int)),cast(0 as bigint)) as m
+from emp;
++--------+
+| M      |
++--------+
+| 100611 |
++--------+
+(1 row)
+
+!ok
+
+EnumerableCalc(expr#0=[{inputs}], expr#1=[CAST($t0):BIGINT NOT NULL], M=[$t1])
+  EnumerableAggregate(group=[{}], agg#0=[$SUM0($0)])
+    EnumerableCalc(expr#0..7=[{inputs}], expr#8=[CAST($t3):INTEGER], $f0=[$t8])
+      EnumerableTableScan(table=[[scott, EMP]])
+!plan
 
 # End agg.iq

@@ -210,7 +210,8 @@ public class RexShuttle implements RexVisitor<RexNode> {
     } else {
       return new RexFieldAccess(
           after,
-          fieldAccess.getField());
+          fieldAccess.getField(),
+          fieldAccess.getType());
     }
   }
 
@@ -241,6 +242,10 @@ public class RexShuttle implements RexVisitor<RexNode> {
 
   @Override public RexNode visitLambdaRef(RexLambdaRef lambdaRef) {
     return lambdaRef;
+  }
+
+  @Override public RexNode visitNodeAndFieldIndex(RexNodeAndFieldIndex nodeAndFieldIndex) {
+    return nodeAndFieldIndex;
   }
 
   /**

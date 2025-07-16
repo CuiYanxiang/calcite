@@ -643,18 +643,22 @@ public class SqlOperatorTest {
     f.setFor(SqlStdOperatorTable.CAST, VmName.EXPAND);
     SqlOperatorFixture f0 = f.withConformance(SqlConformanceEnum.DEFAULT);
     f0.checkFails("^" + castType.name() + "(true as integer)^",
-        "Cast function cannot convert value of type BOOLEAN to type INTEGER", false);
+        "Cast function cannot convert value of type BOOLEAN NOT NULL to "
+            + "type INTEGER NOT NULL", false);
     f0.checkFails("^" + castType.name() + "(true as decimal)^",
-        "Cast function cannot convert value of type BOOLEAN to type DECIMAL\\(19, 0\\)", false);
+        "Cast function cannot convert value of type BOOLEAN NOT NULL to "
+            + "type DECIMAL\\(19, 0\\) NOT NULL", false);
 
     SqlOperatorFixture f1 = f.withConformance(SqlConformanceEnum.BIG_QUERY);
     f1.checkString("cast(true as integer)", "1", "INTEGER NOT NULL");
     f1.checkString("cast(false as integer)", "0", "INTEGER NOT NULL");
     f1.checkString("cast(true as bigint)", "1", "BIGINT NOT NULL");
     f1.checkFails("^" + castType.name() + "(true as float)^",
-        "Cast function cannot convert value of type BOOLEAN to type FLOAT", false);
+        "Cast function cannot convert value of type BOOLEAN NOT NULL to "
+            + "type FLOAT NOT NULL", false);
     f1.checkFails("^" + castType.name() + "(true as decimal)^",
-        "Cast function cannot convert value of type BOOLEAN to type DECIMAL\\(19, 0\\)", false);
+        "Cast function cannot convert value of type BOOLEAN NOT NULL to "
+            + "type DECIMAL\\(19, 0\\) NOT NULL", false);
   }
 
   @ParameterizedTest
@@ -1802,6 +1806,69 @@ public class SqlOperatorTest {
     f.checkNull("cast(null as row(f0 varchar, f1 varchar))");
   }
 
+  /** Test cases for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-4918">
+   * [CALCITE-4918] Add a VARIANT data type</a>. */
+  @Test public void testVariant() {
+    SqlOperatorFixture f = fixture();
+    f.checkScalar("cast(1 as VARIANT)", "1", "VARIANT NOT NULL");
+    // String variants include quotes when output
+    f.checkScalar("cast('abc' as VARIANT)", "\"abc\"", "VARIANT NOT NULL");
+    f.checkScalar("cast(ARRAY[1,2,3] as VARIANT)", "[1, 2, 3]", "VARIANT NOT NULL");
+    f.checkScalar("cast(MULTISET[1,2,3] as VARIANT)", "[1, 2, 3]", "VARIANT NOT NULL");
+    f.checkScalar("cast(MAP['a',1,'b',2] as VARIANT)", "{\"a\"=1, \"b\"=2}", "VARIANT NOT NULL");
+    f.checkScalar("cast((1, 2) as row(f0 integer, f1 bigint))", "{1, 2}",
+        "RecordType(INTEGER NOT NULL F0, BIGINT NOT NULL F1) NOT NULL");
+    f.checkScalar("cast(row(1, 2) AS VARIANT)", "{1, 2}", "VARIANT NOT NULL");
+    f.checkNull("cast(NULL AS VARIANT)");
+
+    // Converting a VARIANT back to the original type produces the original value
+    f.checkScalar("cast(cast(1 as VARIANT) AS INTEGER)", "1", "INTEGER");
+    // no quotes printed, since the result is a VARCHAR
+    f.checkScalar("cast(cast(CAST('abc' AS VARCHAR) as VARIANT) AS VARCHAR)", "abc",
+        "VARCHAR");
+    f.checkScalar("cast(cast(ARRAY[1,2,3] as VARIANT) AS INTEGER ARRAY)", "[1, 2, 3]",
+        "INTEGER ARRAY");
+    f.checkScalar("cast(cast('abc' as VARIANT) AS VARCHAR)", "abc", "VARCHAR");
+    f.checkScalar("cast(cast('abc' as VARIANT) AS CHAR(3))", "abc", "CHAR(3)");
+
+    // Converting a variant to anything that does not match the runtime type returns null
+    f.checkScalar("cast(cast(1 as VARIANT) as INTEGER)", "1", "INTEGER");
+    f.checkNull("cast(cast(1 as VARIANT) as VARCHAR)");
+    f.checkNull("cast(cast(1 as VARIANT) as INT ARRAY)");
+
+    // Arrays of variant objects
+    f.checkScalar("ARRAY[CAST(1 AS VARIANT), CAST('abc' AS VARIANT)]", "[1, \"abc\"]",
+        "VARIANT NOT NULL ARRAY NOT NULL");
+    // Arrays can even contain other arrays
+    f.checkScalar("ARRAY[CAST(1 AS VARIANT), CAST('abc' AS VARIANT), CAST(ARRAY[2] AS VARIANT)]",
+        "[1, \"abc\", [2]]", "VARIANT NOT NULL ARRAY NOT NULL");
+    // Field access in a VARIANT ARRAY
+    f.checkScalar("CAST(ARRAY[CAST(1 AS VARIANT), CAST('abc' AS VARIANT)][1] AS INTEGER)", "1",
+        "INTEGER");
+    // Field access in a VARIANT MAP
+    f.checkScalar("cast(MAP['a',1,'b',2] as VARIANT)['a']", "1", "VARIANT");
+    // Alternative field access in a VARIANT MAP.  Field names have to be quoted, though
+    f.checkScalar("cast(MAP['a',1,'b',2] as VARIANT).\"a\"", "1", "VARIANT");
+
+    // Here is a possible representation of a JSON document { "a": 1, "b": [ { "c": 2.3 }, 5 ] }
+    f.checkScalar("MAP["
+            + "CAST('a' AS VARIANT), CAST(1 AS VARIANT), "
+            + "CAST('b' AS VARIANT), CAST(ARRAY["
+            + "CAST(MAP[CAST('c' AS VARIANT), CAST(2.3 AS VARIANT)] AS VARIANT), CAST(5 AS VARIANT)]"
+            + " AS VARIANT)]",
+        "{\"a\"=1, \"b\"=[{\"c\"=2.3}, 5]}",
+        "(VARIANT NOT NULL, VARIANT NOT NULL) MAP NOT NULL");
+    // Another possible representation using CHAR instead of VARIANT for MAP keys
+    f.checkScalar("MAP["
+            + "'a', CAST(1 AS VARIANT), "
+            + "'b', CAST(ARRAY["
+            + "CAST(MAP['c', CAST(2.3 AS VARIANT)] AS VARIANT), CAST(5 AS VARIANT)]"
+            + " AS VARIANT)]",
+        "{a=1, b=[{\"c\"=2.3}, 5]}",
+        "(CHAR(1) NOT NULL, VARIANT NOT NULL) MAP NOT NULL");
+  }
+
   /** Test case for
    * <a href="https://issues.apache.org/jira/projects/CALCITE/issues/CALCITE-6095">
    * [CALCITE-6095] Arithmetic expression with VARBINARY value causes AssertionFailure</a>.
@@ -2238,7 +2305,7 @@ public class SqlOperatorTest {
       f.checkType("chr(CAST(null AS INTEGER))", "CHAR(1)");
     };
     final List<SqlLibrary> libraries =
-        list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL);
+        list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -4583,6 +4650,53 @@ public class SqlOperatorTest {
         false);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6730">[CALCITE-6730]
+   * Add CONVERT function(enabled in Oracle library)</a>. */
+  @Test void testConvertOracleFunc() {
+    final SqlOperatorFixture f = fixture()
+        .setFor(SqlLibraryOperators.CONVERT_ORACLE, VM_JAVA)
+        .withLibrary(SqlLibrary.ORACLE);
+
+    final Consumer<SqlOperatorFixture> consumer = f0 -> {
+      f0.checkFails("convert('a', utf8, utf10)", "UTF10", false);
+      f0.checkFails("convert('a', utf8, ^null^)",
+          "(?s).*Encountered \\\"null\\\" at.*", false);
+      f0.checkFails("convert('a', ^null^, utf8)",
+          "(?s).*Encountered \\\"null\\\" at.*", false);
+      f0.checkFails("^convert(1, utf8, gbk)^",
+          "Invalid type 'INTEGER NOT NULL' in 'CONVERT' function\\. "
+              + "Only 'CHARACTER' type is supported",
+          false);
+      f0.checkType("convert('a', utf16, gbk)", "CHAR(1) NOT NULL");
+      f0.checkType("convert('a', utf16)", "CHAR(1) NOT NULL");
+      f0.checkType("convert(null, utf16, gbk)", "NULL");
+      f0.checkType("convert('', utf16, gbk)", "CHAR(0) NOT NULL");
+      f0.checkType("convert(cast(1 as varchar(2)), utf8, latin1)", "VARCHAR(2) NOT NULL");
+
+      // cast check
+      f.check("select 'a' as alia\n"
+              + " from (values(true)) where cast(convert('col', latin1) as char(3))='col'",
+          SqlTests.ANY_TYPE_CHECKER, 'a');
+      f.checkFails("select 'a' as alia\n"
+              + " from (values(true)) where ^cast(convert('col', latin1) as char(3))=_GBK'col'^",
+          "Cannot apply operation '=' to strings with "
+              + "different charsets 'ISO-8859-1' and 'GBK'",
+          false);
+      // the result of convert('col', gbk) has GBK charset
+      // while CHAR(3) has ISO-8859-1 charset, which is not allowed to cast
+      f.checkFails("select 'a' as alia\n"
+              + " from (values(true)) where ^cast(convert('col', gbk) as char(3))^=_GBK'col'",
+          "Cast function cannot convert value of type "
+              + "CHAR\\(3\\) CHARACTER SET \"GBK\" NOT NULL to type CHAR\\(3\\) NOT NULL",
+          false);
+    };
+
+    final List<SqlConformanceEnum> conformances =
+        list(SqlConformanceEnum.ORACLE_10, SqlConformanceEnum.ORACLE_12);
+    f.forEachConformance(conformances, consumer);
+  }
+
   @Test void testTranslateFunc() {
     final SqlOperatorFixture f = fixture();
     f.setFor(SqlStdOperatorTable.TRANSLATE, VM_JAVA);
@@ -4717,10 +4831,43 @@ public class SqlOperatorTest {
         3, "INTEGER NOT NULL");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6774">[CALCITE-6774]
+   * REPLACE function returns wrong result when search pattern is an empty string</a>. */
   @Test void testReplaceFunc() {
     final SqlOperatorFixture f = fixture();
+    checkReplaceFunc(f);
+    // case-sensitive
+    f.checkString("REPLACE('ciAao', 'a', 'ciao')", "ciAciaoo",
+        "VARCHAR NOT NULL");
+    f.checkString("REPLACE('ciAao', 'A', 'ciao')", "ciciaoao",
+        "VARCHAR NOT NULL");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6791">[CALCITE-6791]
+   * Search pattern during matching in REPLACE function should be case insensitive
+   * in MSSQL</a>. */
+  @Test void testReplaceMSSQLFunc() {
+    final SqlOperatorFixture f = fixture();
+    checkReplaceFunc(f);
+    // case-insensitive
+    SqlOperatorFixture f1 = f.withConformance(SqlConformanceEnum.SQL_SERVER_2008);
+    f1.checkString("REPLACE('ciAao', 'a', 'ciao')", "ciciaociaoo",
+        "VARCHAR NOT NULL");
+    f1.checkString("REPLACE('ciAao', 'A', 'ciao')", "ciciaociaoo",
+        "VARCHAR NOT NULL");
+  }
+
+  private static void checkReplaceFunc(SqlOperatorFixture f) {
     f.setFor(SqlStdOperatorTable.REPLACE, VmName.EXPAND);
     f.checkString("REPLACE('ciao', 'ciao', '')", "",
+        "VARCHAR NOT NULL");
+    f.checkString("REPLACE('ciao', '', 'ciao')", "ciao",
+        "VARCHAR NOT NULL");
+    f.checkString("REPLACE('ci ao', ' ', 'ciao')", "ciciaoao",
+        "VARCHAR NOT NULL");
+    f.checkString("REPLACE('', 'ciao', 'ciao')", "",
         "VARCHAR NOT NULL");
     f.checkString("REPLACE('hello world', 'o', '')", "hell wrld",
         "VARCHAR NOT NULL");
@@ -5028,6 +5175,44 @@ public class SqlOperatorTest {
     f.checkString("to_base64('')", "", "VARCHAR NOT NULL");
     f.checkString("to_base64('a')", "YQ==", "VARCHAR NOT NULL");
     f.checkString("to_base64(x'61')", "YQ==", "VARCHAR NOT NULL");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6812">[CALCITE-6812]
+   * Add base64 function (enabled in Hive library)</a>. */
+  @Test void testBase64() {
+    final SqlOperatorFixture f = fixture().withLibrary(SqlLibrary.HIVE);
+    f.setFor(SqlLibraryOperators.BASE64);
+    f.checkString("base64(cast('a' as binary))", "YQ==", "VARCHAR NOT NULL");
+    f.checkString("base64('')", "", "VARCHAR NOT NULL");
+    f.checkNull("base64(null)");
+    f.checkString("base64('This is a test String.')",
+        "VGhpcyBpcyBhIHRlc3QgU3RyaW5nLg==",
+        "VARCHAR NOT NULL");
+  }
+
+  @Test void testUnBase64() {
+    final SqlOperatorFixture f0 = fixture()
+        .setFor(SqlLibraryOperators.UN_BASE64);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkString("unbase64('VGhpcyBpcyBhIHRlc3QgU3RyaW5nLg==')",
+          "546869732069732061207465737420537472696e672e",
+          "VARBINARY");
+      f.checkString("unbase64('VGhpcyBpcyBhIHRlc\t3QgU3RyaW5nLg==')",
+          "546869732069732061207465737420537472696e672e",
+          "VARBINARY");
+      f.checkString("unbase64('VGhpcyBpcyBhIHRlc\t3QgU3\nRyaW5nLg==')",
+          "546869732069732061207465737420537472696e672e",
+          "VARBINARY");
+      f.checkString("unbase64('VGhpcyB  pcyBhIHRlc3Qg\tU3Ry\naW5nLg==')",
+          "546869732069732061207465737420537472696e672e",
+          "VARBINARY");
+      f.checkNull("unbase64('-1')");
+      f.checkNull("unbase64('-100')");
+      f.checkNull("unbase64(null)");
+    };
+    f0.forEachLibrary(list(SqlLibrary.HIVE), consumer);
+
   }
 
   @Test void testToChar() {
@@ -5412,7 +5597,7 @@ public class SqlOperatorTest {
       f.checkNull("to_date(NULL, NULL)");
     };
     final List<SqlLibrary> libraries =
-        list(SqlLibrary.ORACLE, SqlLibrary.REDSHIFT);
+        list(SqlLibrary.ORACLE, SqlLibrary.REDSHIFT, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -5575,6 +5760,71 @@ public class SqlOperatorTest {
     f.checkNull("from_base32(cast (null as varchar))");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6815">[CALCITE-6815]
+   * Add bin function (enabled in Hive and Spark library)</a>. */
+  @Test void testBin() {
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.BIN);
+    f0.checkFails("^bin(x'')^",
+        "No match found for function signature BIN\\(<BINARY>\\)",
+        false);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.SPARK, SqlLibrary.HIVE);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkString("bin(12)",
+          "1100",
+          "VARCHAR NOT NULL");
+      f.checkString("bin(1)",
+          "1",
+          "VARCHAR NOT NULL");
+      f.checkString("bin(01)",
+          "1",
+          "VARCHAR NOT NULL");
+      f.checkString("bin(000)",
+          "0",
+          "VARCHAR NOT NULL");
+      f.checkString("bin(-000)",
+          "0",
+          "VARCHAR NOT NULL");
+      f.checkString("bin(-11)",
+          "1111111111111111111111111111111111111111111111111111111111110101",
+          "VARCHAR NOT NULL");
+      f.checkString("bin(-1)",
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "VARCHAR NOT NULL");
+      f.checkString("bin(-001)",
+          "1111111111111111111111111111111111111111111111111111111111111111",
+          "VARCHAR NOT NULL");
+      f.checkNull("bin(null)");
+    };
+    f0.forEachLibrary(libraries, consumer);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6821">[CALCITE-6821]
+   * Add crc32 function (enabled in Hive and Spark library)</a>. */
+  @Test void testCRC32() {
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.CRC32);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.SPARK, SqlLibrary.HIVE);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkString("crc32('ABC')",
+          "2743272264",
+          "BIGINT NOT NULL");
+      f.checkString("crc32(x'414243')",
+          "2743272264",
+          "BIGINT NOT NULL");
+      f.checkString("crc32('')",
+          "0",
+          "BIGINT NOT NULL");
+      f.checkString("crc32(x'')",
+          "0",
+          "BIGINT NOT NULL");
+      f.checkNull("crc32(null)");
+    };
+    f0.forEachLibrary(libraries, consumer);
+  }
+
   @Test void testMd5() {
     final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.MD5);
     f0.checkFails("^md5(x'')^",
@@ -5582,7 +5832,8 @@ public class SqlOperatorTest {
         false);
     final List<SqlLibrary> libraries =
         ImmutableList.of(SqlLibrary.BIG_QUERY, SqlLibrary.MYSQL,
-            SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
+            SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT,
+            SqlLibrary.SPARK, SqlLibrary.HIVE);
     final Consumer<SqlOperatorFixture> consumer = f -> {
       f.checkString("md5(x'')",
           "d41d8cd98f00b204e9800998ecf8427e",
@@ -5607,7 +5858,7 @@ public class SqlOperatorTest {
         false);
     final List<SqlLibrary> libraries =
         ImmutableList.of(SqlLibrary.BIG_QUERY, SqlLibrary.MYSQL,
-            SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
+            SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT, SqlLibrary.SPARK, SqlLibrary.HIVE);
     final Consumer<SqlOperatorFixture> consumer = f -> {
       f.checkString("sha1(x'')",
           "da39a3ee5e6b4b0d3255bfef95601890afd80709",
@@ -5680,6 +5931,35 @@ public class SqlOperatorTest {
     f0.forEachLibrary(libraries, consumer);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6805">[CALCITE-6805]
+   * Add hex function (enabled in Hive, Spark library)</a>. */
+  @Test void testHex() {
+    SqlOperatorFixture sqlOperatorFixture = fixture();
+    final SqlOperatorFixture f0 = sqlOperatorFixture.setFor(SqlLibraryOperators.HEX);
+    f0.checkFails("^hex('')^",
+        "No match found for function signature HEX\\(<CHARACTER>\\)",
+        false);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkString("hex('abc')",
+          "616263",
+          "VARCHAR NOT NULL");
+      f.checkString("hex('1')",
+          "31",
+          "VARCHAR NOT NULL");
+      f.checkString("hex('0')",
+          "30",
+          "VARCHAR NOT NULL");
+      f.checkString("hex('-1')",
+          "2d31",
+          "VARCHAR NOT NULL");
+      f.checkString("hex('')", "", "VARCHAR NOT NULL");
+      f.checkNull("hex(null)");
+      f.checkNull("hex(cast(null as varbinary))");
+    };
+    f0.forEachLibrary(list(SqlLibrary.HIVE, SqlLibrary.SPARK), consumer);
+  }
+
   @Test void testToHex() {
     final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.TO_HEX);
     f0.checkFails("^to_hex(x'')^",
@@ -5729,7 +6009,8 @@ public class SqlOperatorTest {
     };
     final List<SqlLibrary> libraries =
         list(SqlLibrary.BIG_QUERY, SqlLibrary.MYSQL,
-            SqlLibrary.POSTGRESQL, SqlLibrary.SPARK);
+            SqlLibrary.POSTGRESQL, SqlLibrary.SPARK,
+            SqlLibrary.REDSHIFT, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -5744,7 +6025,7 @@ public class SqlOperatorTest {
       f.checkString("SPACE(5)", "     ", "VARCHAR NOT NULL");
       f.checkNull("SPACE(cast(null as integer))");
     };
-    f0.forEachLibrary(list(SqlLibrary.MYSQL, SqlLibrary.SPARK), consumer);
+    f0.forEachLibrary(list(SqlLibrary.MYSQL, SqlLibrary.SPARK, SqlLibrary.HIVE), consumer);
   }
 
   @Test void testStrcmpFunc() {
@@ -5765,7 +6046,7 @@ public class SqlOperatorTest {
         false);
     final List<SqlLibrary> libraries =
         list(SqlLibrary.BIG_QUERY, SqlLibrary.MYSQL,
-            SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT);
+            SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT, SqlLibrary.HIVE);
     final Consumer<SqlOperatorFixture> consumer = f -> {
       f.checkString("SOUNDEX('TECH ON THE NET')", "T253", "VARCHAR(4) NOT NULL");
       f.checkString("SOUNDEX('Miller')", "M460", "VARCHAR(4) NOT NULL");
@@ -6108,7 +6389,8 @@ public class SqlOperatorTest {
       f.checkQuery("select regexp_replace('a b c', 'b', 'X')");
     };
     final List<SqlLibrary> libraries =
-        list(SqlLibrary.BIG_QUERY, SqlLibrary.MYSQL, SqlLibrary.ORACLE, SqlLibrary.REDSHIFT);
+        list(SqlLibrary.BIG_QUERY, SqlLibrary.MYSQL, SqlLibrary.ORACLE,
+            SqlLibrary.REDSHIFT, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
 
     // Tests to verify double-backslashes are ignored for indexing in other dialects
@@ -6121,6 +6403,8 @@ public class SqlOperatorTest {
     f2.checkString("regexp_replace('abcdefghijabc', 'abc(.)', '$1x')", "dxefghijabc",
         "VARCHAR NOT NULL");
   }
+
+
 
   @Test void testRegexpReplace4Func() {
     final SqlOperatorFixture f0 = fixture();
@@ -6223,6 +6507,8 @@ public class SqlOperatorTest {
     f.checkString("regexp_replace('abc\t\ndef\t\nghi', '\t\n', '+')", "abc+def\t\nghi",
         "VARCHAR NOT NULL");
     f.checkString("regexp_replace('abc\t\ndef\t\nghi', '\\w+', '+')", "+\t\ndef\t\nghi",
+        "VARCHAR NOT NULL");
+    f.checkString("regexp_replace('abc', 'a(.*)c', 'x\\1x')", "xbx",
         "VARCHAR NOT NULL");
 
     f.checkQuery("select regexp_replace('a b c', 'b', 'X')");
@@ -7439,6 +7725,11 @@ public class SqlOperatorTest {
     f0.checkFails("^log(100, 10)^",
         "No match found for function signature LOG\\(<NUMERIC>, <NUMERIC>\\)", false);
     final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.BIG_QUERY);
+    // Test case for https://issues.apache.org/jira/browse/CALCITE-6984
+    // FamilyOperandTypeChecker with a Predicate describing optional arguments does not
+    // reject mistyped expressions
+    f.checkFails("^log(x'')^",
+        "Cannot apply 'LOG' to arguments of type 'LOG\\(<BINARY\\(0\\)>\\)'.*\\n.*", false);
     f.checkScalarApprox("log(10, 10)", "DOUBLE NOT NULL",
         isWithin(1.0, 0.000001));
     f.checkScalarApprox("log(64, 8)", "DOUBLE NOT NULL",
@@ -7543,7 +7834,7 @@ public class SqlOperatorTest {
       f.checkNull("log(0)");
       f.checkNull("log(-1)");
     };
-    f0.forEachLibrary(list(SqlLibrary.MYSQL, SqlLibrary.SPARK), consumer);
+    f0.forEachLibrary(list(SqlLibrary.MYSQL, SqlLibrary.SPARK, SqlLibrary.HIVE), consumer);
   }
 
   /** Test case for
@@ -7697,7 +7988,7 @@ public class SqlOperatorTest {
     f.checkScalar("array_append(array[map[1, 'a']], map[2, 'b'])", "[{1=a}, {2=b}]",
         "(INTEGER NOT NULL, CHAR(1) NOT NULL) MAP NOT NULL ARRAY NOT NULL");
     f.checkNull("array_append(cast(null as integer array), 1)");
-    f.checkType("array_append(cast(null as integer array), 1)", "INTEGER NOT NULL ARRAY");
+    f.checkType("array_append(cast(null as integer array), 1)", "INTEGER ARRAY");
     f.checkFails("^array_append(array[1, 2], true)^",
         "INTEGER is not comparable to BOOLEAN", false);
 
@@ -7786,144 +8077,199 @@ public class SqlOperatorTest {
 
   /** Tests {@code ARRAY_CONTAINS} function from Spark. */
   @Test void testArrayContainsFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_CONTAINS);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_CONTAINS);
     f0.checkFails("^array_contains(array[1, 2], 1)^",
         "No match found for function signature "
             + "ARRAY_CONTAINS\\(<INTEGER ARRAY>, <NUMERIC>\\)", false);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.SPARK);
 
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_contains(array[1, 2], 1)", true,
-        "BOOLEAN NOT NULL");
-    f.checkScalar("array_contains(array[1], 1)", true,
-        "BOOLEAN NOT NULL");
-    f.checkScalar("array_contains(array(), 1)", false,
-        "BOOLEAN NOT NULL");
-    f.checkScalar("array_contains(array[array[1, 2], array[3, 4]], array[1, 2])", true,
-        "BOOLEAN NOT NULL");
-    f.checkScalar("array_contains(array[map[1, 'a'], map[2, 'b']], map[1, 'a'])", true,
-        "BOOLEAN NOT NULL");
-    f.checkNull("array_contains(cast(null as integer array), 1)");
-    f.checkType("array_contains(cast(null as integer array), 1)", "BOOLEAN");
-    // Flink and Spark differ on the following. The expression
-    //   array_contains(array[1, null], cast(null as integer))
-    // returns TRUE in Flink, and returns UNKNOWN in Spark. The current
-    // function has Spark behavior, but if we supported a Flink function
-    // library (i.e. "fun=flink") we could add a function with Flink behavior.
-    f.checkNull("array_contains(array[1, null], cast(null as integer))");
-    f.checkType("array_contains(array[1, null], cast(null as integer))", "BOOLEAN");
-    f.checkFails("^array_contains(array[1, 2], true)^",
-        "INTEGER is not comparable to BOOLEAN", false);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_contains(array[1, 2], 1)", true,
+          "BOOLEAN NOT NULL");
+      f.checkScalar("array_contains(array[1], 1)", true,
+          "BOOLEAN NOT NULL");
+      f.checkScalar("array_contains(array(), 1)", false,
+          "BOOLEAN NOT NULL");
+      f.checkScalar("array_contains(array[array[1, 2], array[3, 4]], array[1, 2])", true,
+          "BOOLEAN NOT NULL");
+      f.checkScalar("array_contains(array[map[1, 'a'], map[2, 'b']], map[1, 'a'])", true,
+          "BOOLEAN NOT NULL");
+      f.checkNull("array_contains(cast(null as integer array), 1)");
+      f.checkType("array_contains(cast(null as integer array), 1)", "BOOLEAN");
+      // Flink and Spark differ on the following. The expression
+      //   array_contains(array[1, null], cast(null as integer))
+      // returns TRUE in Flink, and returns UNKNOWN in Spark. The current
+      // function has Spark behavior, but if we supported a Flink function
+      // library (i.e. "fun=flink") we could add a function with Flink behavior.
+      f.checkNull("array_contains(array[1, null], cast(null as integer))");
+      f.checkType("array_contains(array[1, null], cast(null as integer))", "BOOLEAN");
+      f.checkFails("^array_contains(array[1, 2], true)^",
+          "INTEGER is not comparable to BOOLEAN", false);
 
-    // check null without cast
-    f.checkNull("array_contains(array[1, 2], null)");
-    f.checkFails("array_contains(^null^, array[1, 2])", "Illegal use of 'NULL'", false);
-    f.checkFails("array_contains(^null^, null)", "Illegal use of 'NULL'", false);
+      // check null without cast
+      f.checkNull("array_contains(array[1, 2], null)");
+      f.checkFails("array_contains(^null^, array[1, 2])", "Illegal use of 'NULL'", false);
+      f.checkFails("array_contains(^null^, null)", "Illegal use of 'NULL'", false);
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
-  /** Tests {@code ARRAY_DISTINCT} function from Spark. */
+  /** Tests {@code ARRAY_DISTINCT} function from Spark, Hive. */
   @Test void testArrayDistinctFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_DISTINCT);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_DISTINCT);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
     f0.checkFails("^array_distinct(array['foo'])^",
         "No match found for function signature ARRAY_DISTINCT\\(<CHAR\\(3\\) ARRAY>\\)", false);
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_distinct(array[1, 2, 2, 1])", "[1, 2]",
-        "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_distinct(array[null, 1, null])", "[null, 1]",
-        "INTEGER ARRAY NOT NULL");
-    f.checkNull("array_distinct(null)");
-    // elements cast
-    f.checkScalar("array_distinct(array[null, cast(1 as tinyint), 1, cast(2 as smallint)])",
-        "[null, 1, 2]", "INTEGER ARRAY NOT NULL");
-    f.checkScalar("array_distinct(array[null, cast(1 as tinyint), 1, cast(2 as bigint)])",
-        "[null, 1, 2]", "BIGINT ARRAY NOT NULL");
-    f.checkScalar("array_distinct(array[null, cast(1 as tinyint), 1, cast(2 as decimal)])",
-        "[null, 1, 2]", "DECIMAL(19, 0) ARRAY NOT NULL");
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_distinct(array[1, 2, 2, 1])", "[1, 2]",
+          "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_distinct(array[null, 1, null])", "[null, 1]",
+          "INTEGER ARRAY NOT NULL");
+      f.checkNull("array_distinct(null)");
+      // elements cast
+      f.checkScalar("array_distinct(array[null, cast(1 as tinyint), 1, cast(2 as smallint)])",
+          "[null, 1, 2]", "INTEGER ARRAY NOT NULL");
+      f.checkScalar("array_distinct(array[null, cast(1 as tinyint), 1, cast(2 as bigint)])",
+          "[null, 1, 2]", "BIGINT ARRAY NOT NULL");
+      f.checkScalar("array_distinct(array[null, cast(1 as tinyint), 1, cast(2 as decimal)])",
+          "[null, 1, 2]", "DECIMAL(19, 0) ARRAY NOT NULL");
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
   @Test void testArrayJoinFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_JOIN);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_JOIN);
     f0.checkFails("^array_join(array['aa', 'b', 'c'], '-')^", "No match found for function"
         + " signature ARRAY_JOIN\\(<CHAR\\(2\\) ARRAY>, <CHARACTER>\\)", false);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_join(array['aa', 'b', 'c'], '-')", "aa-b -c ",
+          "VARCHAR NOT NULL");
+      f.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-', 'empty')",
+          "empty-aa-empty-b -empty", "VARCHAR NOT NULL");
+      f.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-')", "aa-b ",
+          "VARCHAR NOT NULL");
+      f.checkScalar("array_join(array[null, x'aa', null, x'bb', null], '-')", "aa-bb",
+          "VARCHAR NOT NULL");
+      f.checkScalar("array_join(array['', 'b'], '-')", " -b", "VARCHAR NOT NULL");
+      f.checkScalar("array_join(array['', ''], '-')", "-", "VARCHAR NOT NULL");
 
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_join(array['aa', 'b', 'c'], '-')", "aa-b -c ",
-        "VARCHAR NOT NULL");
-    f.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-', 'empty')",
-        "empty-aa-empty-b -empty", "VARCHAR NOT NULL");
-    f.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-')", "aa-b ",
-        "VARCHAR NOT NULL");
-    f.checkScalar("array_join(array[null, x'aa', null, x'bb', null], '-')", "aa-bb",
-        "VARCHAR NOT NULL");
-    f.checkScalar("array_join(array['', 'b'], '-')", " -b", "VARCHAR NOT NULL");
-    f.checkScalar("array_join(array['', ''], '-')", "-", "VARCHAR NOT NULL");
+      final SqlOperatorFixture f1 =
+          f.withConformance(SqlConformanceEnum.PRAGMATIC_2003);
+      f1.checkScalar("array_join(array['aa', 'b', 'c'], '-')", "aa-b-c",
+          "VARCHAR NOT NULL");
+      f1.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-', 'empty')",
+          "empty-aa-empty-b-empty", "VARCHAR NOT NULL");
+      f1.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-')", "aa-b",
+          "VARCHAR NOT NULL");
+      f1.checkScalar("array_join(array[null, x'aa', null, x'bb', null], '-')", "aa-bb",
+          "VARCHAR NOT NULL");
+      f1.checkScalar("array_join(array['', 'b'], '-')", "-b", "VARCHAR NOT NULL");
+      f1.checkScalar("array_join(array['', ''], '-')", "-", "VARCHAR NOT NULL");
 
-    final SqlOperatorFixture f1 =
-        f.withConformance(SqlConformanceEnum.PRAGMATIC_2003);
-    f1.checkScalar("array_join(array['aa', 'b', 'c'], '-')", "aa-b-c",
-        "VARCHAR NOT NULL");
-    f1.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-', 'empty')",
-        "empty-aa-empty-b-empty", "VARCHAR NOT NULL");
-    f1.checkScalar("array_join(array[null, 'aa', null, 'b', null], '-')", "aa-b",
-        "VARCHAR NOT NULL");
-    f1.checkScalar("array_join(array[null, x'aa', null, x'bb', null], '-')", "aa-bb",
-        "VARCHAR NOT NULL");
-    f1.checkScalar("array_join(array['', 'b'], '-')", "-b", "VARCHAR NOT NULL");
-    f1.checkScalar("array_join(array['', ''], '-')", "-", "VARCHAR NOT NULL");
-
-    f.checkNull("array_join(null, '-')");
-    f.checkNull("array_join(array['a', 'b', null], null)");
-    f.checkFails("^array_join(array[1, 2, 3], '-', ' ')^",
-        "Cannot apply 'ARRAY_JOIN' to arguments of type 'ARRAY_JOIN\\("
-            + "<INTEGER ARRAY>, <CHAR\\(1\\)>, <CHAR\\(1\\)>\\)'\\. Supported form\\(s\\):"
-            + " ARRAY_JOIN\\(<STRING ARRAY>, <CHARACTER>\\[, <CHARACTER>\\]\\)", false);
+      f.checkNull("array_join(null, '-')");
+      f.checkNull("array_join(array['a', 'b', null], null)");
+      f.checkFails("^array_join(array[1, 2, 3], '-', ' ')^",
+          "Cannot apply 'ARRAY_JOIN' to arguments of type 'ARRAY_JOIN\\("
+              + "<INTEGER ARRAY>, <CHAR\\(1\\)>, <CHAR\\(1\\)>\\)'\\. Supported form\\(s\\):"
+              + " ARRAY_JOIN\\(<STRING ARRAY>, <CHARACTER>\\[, <CHARACTER>\\]\\)", false);
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
-  /** Tests {@code ARRAY_MAX} function from Spark. */
+  /** Tests {@code ARRAY_MAX} function from Spark, Hive. */
   @Test void testArrayMaxFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_MAX);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_MAX);
     f0.checkFails("^array_max(array[1, 2])^",
         "No match found for function signature ARRAY_MAX\\(<INTEGER ARRAY>\\)", false);
-
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_max(array[1, 2])", "2", "INTEGER");
-    f.checkScalar("array_max(array[1, 2, null])", "2", "INTEGER");
-    f.checkScalar("array_max(array[1])", "1", "INTEGER");
-    f.checkType("array_max(array())", "UNKNOWN");
-    f.checkNull("array_max(array())");
-    f.checkNull("array_max(cast(null as integer array))");
-    // elements cast
-    f.checkScalar("array_max(array[null, 1, cast(2 as tinyint)])", "2",
-        "INTEGER");
-    f.checkScalar("array_max(array[null, 1, cast(2 as bigint)])", "2",
-        "BIGINT");
-    f.checkScalar("array_max(array[null, 1, cast(2 as decimal)])", "2",
-        "DECIMAL(19, 0)");
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_max(array[1, 2])", "2", "INTEGER");
+      f.checkScalar("array_max(array[1, 2, null])", "2", "INTEGER");
+      f.checkScalar("array_max(array[1])", "1", "INTEGER");
+      f.checkType("array_max(array())", "UNKNOWN");
+      f.checkNull("array_max(array())");
+      f.checkNull("array_max(cast(null as integer array))");
+      // elements cast
+      f.checkScalar("array_max(array[null, 1, cast(2 as tinyint)])", "2",
+          "INTEGER");
+      f.checkScalar("array_max(array[null, 1, cast(2 as bigint)])", "2",
+          "BIGINT");
+      f.checkScalar("array_max(array[null, 1, cast(2 as decimal)])", "2",
+          "DECIMAL(19, 0)");
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
-  /** Tests {@code ARRAY_MIN} function from Spark. */
+  /** Tests {@code ARRAY_MIN} function from Spark, Hive. */
   @Test void testArrayMinFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_MIN);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_MIN);
     f0.checkFails("^array_min(array[1, 2])^",
         "No match found for function signature ARRAY_MIN\\(<INTEGER ARRAY>\\)", false);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_min(array[1, 2])", "1", "INTEGER");
+      f.checkScalar("array_min(array[1, 2, null])", "1", "INTEGER");
+      f.checkType("array_min(array())", "UNKNOWN");
+      f.checkNull("array_min(array())");
+      f.checkNull("array_min(cast(null as integer array))");
+      // elements cast
+      f.checkScalar("array_min(array[null, 1, cast(2 as tinyint)])", "1",
+          "INTEGER");
+      f.checkScalar("array_min(array[null, 1, cast(2 as bigint)])", "1",
+          "BIGINT");
+      f.checkScalar("array_min(array[null, 1, cast(2 as decimal)])", "1",
+          "DECIMAL(19, 0)");
+    };
+    f0.forEachLibrary(libraries, consumer);
+  }
 
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_min(array[1, 2])", "1", "INTEGER");
-    f.checkScalar("array_min(array[1, 2, null])", "1", "INTEGER");
-    f.checkType("array_min(array())", "UNKNOWN");
-    f.checkNull("array_min(array())");
-    f.checkNull("array_min(cast(null as integer array))");
-    // elements cast
-    f.checkScalar("array_min(array[null, 1, cast(2 as tinyint)])", "1",
-        "INTEGER");
-    f.checkScalar("array_min(array[null, 1, cast(2 as bigint)])", "1",
-        "BIGINT");
-    f.checkScalar("array_min(array[null, 1, cast(2 as decimal)])", "1",
-        "DECIMAL(19, 0)");
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6831">[CALCITE-6831]
+   * Add ARRAR_SLICE function (enabled in Hive library)</a>. */
+  @Test void testArraySlice() {
+    SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_SLICE);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkString("array_slice(array[1,2,3], 1, 2)",
+          "[2, 3]",
+          "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkString("array_slice(array[1,null,3], 1, 2)",
+          "[null, 3]",
+          "INTEGER ARRAY NOT NULL");
+      f.checkString("array_slice(array[1,2,3], 1, 10)",
+          "[]",
+          "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkString("array_slice(array['a','b','c','d'], 1, 3)",
+          "[b, c, d]",
+          "CHAR(1) NOT NULL ARRAY NOT NULL");
+      f.checkString("array_slice(array[null,null,null], 1, 2)",
+          "[null, null]",
+          "NULL ARRAY NOT NULL");
+      f.checkString("array_slice(array[1,2.2,3], 1, 2)",
+          "[2.2, 3.0]",
+          "DECIMAL(11, 1) NOT NULL ARRAY NOT NULL");
+      f.checkString("array_slice(array[1,cast(2 as double),3], 1, 2)",
+          "[2.0, 3.0]",
+          "DOUBLE NOT NULL ARRAY NOT NULL");
+      f.checkString("array_slice(array[1,2.2,3,null], 1, 3)",
+          "[2.2, 3.0, null]",
+                "DECIMAL(11, 1) ARRAY NOT NULL");
+      f.checkFails("array_slice(^array[1,2.2,'c']^, 1, 2)",
+                "Parameters must be of the same type", false);
+      f.checkFails("array_slice(array[null,null,null], -1, 2)",
+                "fromIndex = -1", true);
+      f.checkNull("array_slice(array[1,2,3], null, 2)");
+      f.checkNull("array_slice(array[1,2,3], null, null)");
+      f.checkNull("array_slice(array[1,2,3], 1, null)");
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
   /** Tests {@code ARRAY_POSITION} function from Spark. */
@@ -7979,7 +8325,7 @@ public class SqlOperatorTest {
     f.checkScalar("array_prepend(array[map[1, 'a']], map[2, 'b'])", "[{2=b}, {1=a}]",
         "(INTEGER NOT NULL, CHAR(1) NOT NULL) MAP NOT NULL ARRAY NOT NULL");
     f.checkNull("array_prepend(cast(null as integer array), 1)");
-    f.checkType("array_prepend(cast(null as integer array), 1)", "INTEGER NOT NULL ARRAY");
+    f.checkType("array_prepend(cast(null as integer array), 1)", "INTEGER ARRAY");
     f.checkFails("^array_prepend(array[1, 2], true)^",
         "INTEGER is not comparable to BOOLEAN", false);
 
@@ -8018,43 +8364,45 @@ public class SqlOperatorTest {
         "BIGINT ARRAY NOT NULL");
   }
 
-  /** Tests {@code ARRAY_REMOVE} function from Spark. */
+  /** Tests {@code ARRAY_REMOVE} function from Spark, Hive. */
   @Test void testArrayRemoveFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_REMOVE);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_REMOVE);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
     f0.checkFails("^array_remove(array[1], 1)^",
         "No match found for function signature ARRAY_REMOVE\\("
             + "<INTEGER ARRAY>, <NUMERIC>\\)", false);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_remove(array[1], 1)", "[]",
+          "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_remove(array[1, 2, 1], 1)", "[2]",
+          "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_remove(array[1, 2, null], 1)", "[2, null]",
+          "INTEGER ARRAY NOT NULL");
+      f.checkScalar("array_remove(array[1, 2, null], 3)", "[1, 2, null]",
+          "INTEGER ARRAY NOT NULL");
+      f.checkScalar("array_remove(array(null), 1)", "[null]",
+          "NULL ARRAY NOT NULL");
+      f.checkScalar("array_remove(array(), 1)", "[]",
+          "UNKNOWN NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_remove(array[array[1, 2]], array[1, 2])", "[]",
+          "INTEGER NOT NULL ARRAY NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_remove(array[map[1, 'a']], map[1, 'a'])", "[]",
+          "(INTEGER NOT NULL, CHAR(1) NOT NULL) MAP NOT NULL ARRAY NOT NULL");
+      f.checkNull("array_remove(cast(null as integer array), 1)");
+      f.checkType("array_remove(cast(null as integer array), 1)", "INTEGER ARRAY");
 
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_remove(array[1], 1)", "[]",
-        "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_remove(array[1, 2, 1], 1)", "[2]",
-        "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_remove(array[1, 2, null], 1)", "[2, null]",
-        "INTEGER ARRAY NOT NULL");
-    f.checkScalar("array_remove(array[1, 2, null], 3)", "[1, 2, null]",
-        "INTEGER ARRAY NOT NULL");
-    f.checkScalar("array_remove(array(null), 1)", "[null]",
-        "NULL ARRAY NOT NULL");
-    f.checkScalar("array_remove(array(), 1)", "[]",
-        "UNKNOWN NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_remove(array[array[1, 2]], array[1, 2])", "[]",
-        "INTEGER NOT NULL ARRAY NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_remove(array[map[1, 'a']], map[1, 'a'])", "[]",
-        "(INTEGER NOT NULL, CHAR(1) NOT NULL) MAP NOT NULL ARRAY NOT NULL");
-    f.checkNull("array_remove(cast(null as integer array), 1)");
-    f.checkType("array_remove(cast(null as integer array), 1)", "INTEGER NOT NULL ARRAY");
-
-    // Flink and Spark differ on the following. The expression
-    //   array_remove(array[1, null], cast(null as integer))
-    // returns [1] in Flink, and returns null in Spark. The current
-    // function has Spark behavior, but if we supported a Flink function
-    // library (i.e. "fun=flink") we could add a function with Flink behavior.
-    f.checkNull("array_remove(array[1, null], cast(null as integer))");
-    f.checkType("array_remove(array[1, null], cast(null as integer))", "INTEGER ARRAY");
-    f.checkFails("^array_remove(array[1, 2], true)^",
-        "INTEGER is not comparable to BOOLEAN", false);
+      // Flink and Spark differ on the following. The expression
+      //   array_remove(array[1, null], cast(null as integer))
+      // returns [1] in Flink, and returns null in Spark. The current
+      // function has Spark behavior, but if we supported a Flink function
+      // library (i.e. "fun=flink") we could add a function with Flink behavior.
+      f.checkNull("array_remove(array[1, null], cast(null as integer))");
+      f.checkType("array_remove(array[1, null], cast(null as integer))", "INTEGER ARRAY");
+      f.checkFails("^array_remove(array[1, 2], true)^",
+          "INTEGER is not comparable to BOOLEAN", false);
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
   /** Tests {@code ARRAY_REPEAT} function from Spark. */
@@ -8224,38 +8572,40 @@ public class SqlOperatorTest {
     f1.checkScalar("array_to_string(array['', ''], '-')", "-", "VARCHAR NOT NULL");
   }
 
-  /** Tests {@code ARRAY_EXCEPT} function from Spark. */
+  /** Tests {@code ARRAY_EXCEPT} function from Spark, Hive. */
   @Test void testArrayExceptFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_EXCEPT);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_EXCEPT);
     f0.checkFails("^array_except(array[2, null, 3, 3], array[1, 2, null])^",
         "No match found for function signature "
             + "ARRAY_EXCEPT\\(<INTEGER ARRAY>, <INTEGER ARRAY>\\)", false);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_except(array[2, 3, 3], array[2])",
+          "[3]", "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_except(array[2], array[2, 3])",
+          "[]", "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_except(array[2, null, 3, 3], array[1, 2, null])",
+          "[3]", "INTEGER ARRAY NOT NULL");
+      f.checkNull("array_except(cast(null as integer array), array[1])");
+      f.checkNull("array_except(array[1], cast(null as integer array))");
+      f.checkNull("array_except(cast(null as integer array), cast(null as integer array))");
 
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_except(array[2, 3, 3], array[2])",
-        "[3]", "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_except(array[2], array[2, 3])",
-        "[]", "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_except(array[2, null, 3, 3], array[1, 2, null])",
-        "[3]", "INTEGER ARRAY NOT NULL");
-    f.checkNull("array_except(cast(null as integer array), array[1])");
-    f.checkNull("array_except(array[1], cast(null as integer array))");
-    f.checkNull("array_except(cast(null as integer array), cast(null as integer array))");
-
-    // check null without cast
-    f.checkFails("^array_except(array[1, 2], null)^",
-        "Cannot apply 'ARRAY_EXCEPT' to arguments of type 'ARRAY_EXCEPT\\(<INTEGER ARRAY>, "
-            + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_EXCEPT\\(<EQUIVALENT_TYPE>, "
-            + "<EQUIVALENT_TYPE>\\)'", false);
-    f.checkFails("^array_except(null, array[1, 2])^",
-        "Cannot apply 'ARRAY_EXCEPT' to arguments of type 'ARRAY_EXCEPT\\(<NULL>, "
-            + "<INTEGER ARRAY>\\)'\\. Supported form\\(s\\): 'ARRAY_EXCEPT\\(<EQUIVALENT_TYPE>, "
-            + "<EQUIVALENT_TYPE>\\)'", false);
-    f.checkFails("^array_except(null, null)^",
-        "Cannot apply 'ARRAY_EXCEPT' to arguments of type 'ARRAY_EXCEPT\\(<NULL>, "
-            + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_EXCEPT\\(<EQUIVALENT_TYPE>, "
-            + "<EQUIVALENT_TYPE>\\)'", false);
+      // check null without cast
+      f.checkFails("^array_except(array[1, 2], null)^",
+          "Cannot apply 'ARRAY_EXCEPT' to arguments of type 'ARRAY_EXCEPT\\(<INTEGER ARRAY>, "
+              + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_EXCEPT\\(<EQUIVALENT_TYPE>, "
+              + "<EQUIVALENT_TYPE>\\)'", false);
+      f.checkFails("^array_except(null, array[1, 2])^",
+          "Cannot apply 'ARRAY_EXCEPT' to arguments of type 'ARRAY_EXCEPT\\(<NULL>, "
+              + "<INTEGER ARRAY>\\)'\\. Supported form\\(s\\): 'ARRAY_EXCEPT\\(<EQUIVALENT_TYPE>, "
+              + "<EQUIVALENT_TYPE>\\)'", false);
+      f.checkFails("^array_except(null, null)^",
+          "Cannot apply 'ARRAY_EXCEPT' to arguments of type 'ARRAY_EXCEPT\\(<NULL>, "
+              + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_EXCEPT\\(<EQUIVALENT_TYPE>, "
+              + "<EQUIVALENT_TYPE>\\)'", false);
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
   /** Tests {@code ARRAY_INSERT} function from Spark. */
@@ -8351,56 +8701,60 @@ public class SqlOperatorTest {
         "[1, 2, null, 3]", "INTEGER ARRAY NOT NULL");
   }
 
-  /** Tests {@code ARRAY_INTERSECT} function from Spark. */
+  /** Tests {@code ARRAY_INTERSECT} function from Spark, Hive. */
   @Test void testArrayIntersectFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_INTERSECT);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_INTERSECT);
     f0.checkFails("^array_intersect(array[2, null, 2], array[1, 2, null])^",
         "No match found for function signature "
             + "ARRAY_INTERSECT\\(<INTEGER ARRAY>, <INTEGER ARRAY>\\)", false);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_intersect(array[2, 3, 3], array[3])",
+          "[3]", "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_intersect(array[1], array[2, 3])",
+          "[]", "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_intersect(array[2, null, 2], array[1, 2, null])",
+          "[2, null]", "INTEGER ARRAY NOT NULL");
+      f.checkNull("array_intersect(cast(null as integer array), array[1])");
+      f.checkNull("array_intersect(array[1], cast(null as integer array))");
+      f.checkNull("array_intersect(cast(null as integer array), cast(null as integer array))");
 
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_intersect(array[2, 3, 3], array[3])",
-        "[3]", "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_intersect(array[1], array[2, 3])",
-        "[]", "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_intersect(array[2, null, 2], array[1, 2, null])",
-        "[2, null]", "INTEGER ARRAY NOT NULL");
-    f.checkNull("array_intersect(cast(null as integer array), array[1])");
-    f.checkNull("array_intersect(array[1], cast(null as integer array))");
-    f.checkNull("array_intersect(cast(null as integer array), cast(null as integer array))");
-
-    // check null without cast
-    f.checkFails("^array_intersect(array[1, 2], null)^",
-        "Cannot apply 'ARRAY_INTERSECT' to arguments of type 'ARRAY_INTERSECT\\(<INTEGER ARRAY>, "
-            + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_INTERSECT\\(<EQUIVALENT_TYPE>, "
-            + "<EQUIVALENT_TYPE>\\)'", false);
-    f.checkFails("^array_intersect(null, array[1, 2])^",
-        "Cannot apply 'ARRAY_INTERSECT' to arguments of type 'ARRAY_INTERSECT\\(<NULL>, "
-            + "<INTEGER ARRAY>\\)'\\. Supported form\\(s\\): 'ARRAY_INTERSECT\\(<EQUIVALENT_TYPE>, "
-            + "<EQUIVALENT_TYPE>\\)'", false);
-    f.checkFails("^array_intersect(null, null)^",
-        "Cannot apply 'ARRAY_INTERSECT' to arguments of type 'ARRAY_INTERSECT\\(<NULL>, "
-            + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_INTERSECT\\(<EQUIVALENT_TYPE>, "
-            + "<EQUIVALENT_TYPE>\\)'", false);
+      // check null without cast
+      f.checkFails("^array_intersect(array[1, 2], null)^",
+          "Cannot apply 'ARRAY_INTERSECT' to arguments of type 'ARRAY_INTERSECT\\(<INTEGER ARRAY>, "
+              + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_INTERSECT\\(<EQUIVALENT_TYPE>, "
+              + "<EQUIVALENT_TYPE>\\)'", false);
+      f.checkFails("^array_intersect(null, array[1, 2])^",
+          "Cannot apply 'ARRAY_INTERSECT' to arguments of type 'ARRAY_INTERSECT\\(<NULL>, "
+              + "<INTEGER ARRAY>\\)'\\. Supported form\\(s\\): 'ARRAY_INTERSECT\\(<EQUIVALENT_TYPE>, "
+              + "<EQUIVALENT_TYPE>\\)'", false);
+      f.checkFails("^array_intersect(null, null)^",
+          "Cannot apply 'ARRAY_INTERSECT' to arguments of type 'ARRAY_INTERSECT\\(<NULL>, "
+              + "<NULL>\\)'\\. Supported form\\(s\\): 'ARRAY_INTERSECT\\(<EQUIVALENT_TYPE>, "
+              + "<EQUIVALENT_TYPE>\\)'", false);
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
-  /** Tests {@code ARRAY_UNION} function from Spark. */
+  /** Tests {@code ARRAY_UNION} function from Spark, Hive. */
   @Test void testArrayUnionFunc() {
-    final SqlOperatorFixture f0 = fixture();
-    f0.setFor(SqlLibraryOperators.ARRAY_UNION);
+    final SqlOperatorFixture f0 = fixture().setFor(SqlLibraryOperators.ARRAY_UNION);
     f0.checkFails("^array_union(array[2, null, 2], array[1, 2, null])^",
         "No match found for function signature "
             + "ARRAY_UNION\\(<INTEGER ARRAY>, <INTEGER ARRAY>\\)", false);
-
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("array_intersect(array[2, 3, 3], array[3])",
-        "[3]", "INTEGER NOT NULL ARRAY NOT NULL");
-    f.checkScalar("array_union(array[2, null, 2], array[1, 2, null])",
-        "[2, null, 1]", "INTEGER ARRAY NOT NULL");
-    f.checkNull("array_union(cast(null as integer array), array[1])");
-    f.checkNull("array_union(array[1], cast(null as integer array))");
-    f.checkNull("array_union(cast(null as integer array), cast(null as integer array))");
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("array_intersect(array[2, 3, 3], array[3])",
+          "[3]", "INTEGER NOT NULL ARRAY NOT NULL");
+      f.checkScalar("array_union(array[2, null, 2], array[1, 2, null])",
+          "[2, null, 1]", "INTEGER ARRAY NOT NULL");
+      f.checkNull("array_union(cast(null as integer array), array[1])");
+      f.checkNull("array_union(array[1], cast(null as integer array))");
+      f.checkNull("array_union(cast(null as integer array), cast(null as integer array))");
+    };
+    f0.forEachLibrary(libraries, consumer);
   }
 
   /** Tests {@code ARRAYS_OVERLAP} function from Spark. */
@@ -8482,10 +8836,10 @@ public class SqlOperatorTest {
 
     f.checkNull("arrays_zip(cast(null as integer array), array[1, 2])");
     f.checkType("arrays_zip(cast(null as integer array), array[1, 2])",
-        "RecordType(INTEGER NOT NULL 0, INTEGER NOT NULL 1) NOT NULL ARRAY");
+        "RecordType(INTEGER 0, INTEGER NOT NULL 1) NOT NULL ARRAY");
     f.checkNull("arrays_zip(array[1, 2], cast(null as integer array))");
     f.checkType("arrays_zip(array[1, 2], cast(null as integer array))",
-        "RecordType(INTEGER NOT NULL 0, INTEGER NOT NULL 1) NOT NULL ARRAY");
+        "RecordType(INTEGER NOT NULL 0, INTEGER 1) NOT NULL ARRAY");
     f.checkFails("^arrays_zip(array[1, 2], true)^",
         "Parameters must be of the same type", false);
   }
@@ -8671,10 +9025,10 @@ public class SqlOperatorTest {
     // test operand is null map
     f1.checkNull("map_concat(map('foo', 1), cast(null as map<varchar, int>))");
     f1.checkType("map_concat(map('foo', 1), cast(null as map<varchar, int>))",
-        "(VARCHAR NOT NULL, INTEGER NOT NULL) MAP");
+        "(VARCHAR NOT NULL, INTEGER) MAP");
     f1.checkNull("map_concat(cast(null as map<varchar, int>), map['foo', 1])");
     f1.checkType("map_concat(cast(null as map<varchar, int>), map['foo', 1])",
-        "(VARCHAR NOT NULL, INTEGER NOT NULL) MAP");
+        "(VARCHAR NOT NULL, INTEGER) MAP");
 
     f1.checkFails("^map_concat(map('foo', 1), null)^",
         "Function 'MAP_CONCAT' should all be of type map, "
@@ -8873,7 +9227,7 @@ public class SqlOperatorTest {
     f.checkScalar("map_from_arrays(array(), array())",
         "{}", "(UNKNOWN NOT NULL, UNKNOWN NOT NULL) MAP NOT NULL");
     f.checkType("map_from_arrays(cast(null as integer array), array['foo', 'bar'])",
-        "(INTEGER NOT NULL, CHAR(3) NOT NULL) MAP");
+        "(INTEGER, CHAR(3) NOT NULL) MAP");
     f.checkNull("map_from_arrays(cast(null as integer array), array['foo', 'bar'])");
 
     f.checkFails("^map_from_arrays(array[1, 2], 2)^",
@@ -10813,7 +11167,7 @@ public class SqlOperatorTest {
     };
     final List<SqlLibrary> libraries =
         list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL,
-            SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
+            SqlLibrary.REDSHIFT, SqlLibrary.SPARK, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -10845,7 +11199,7 @@ public class SqlOperatorTest {
     };
     final List<SqlLibrary> libraries =
         list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL,
-            SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
+            SqlLibrary.REDSHIFT, SqlLibrary.SPARK, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -11202,7 +11556,8 @@ public class SqlOperatorTest {
       f.checkFails(
           String.format(Locale.ROOT, "^substring('string', CAST(%d AS DECIMAL), "
               + "CAST(%d AS DECIMAL))^", Byte.MIN_VALUE, Byte.MAX_VALUE + 10),
-          "Cannot apply 'SUBSTRING' to arguments of type .*\\n.*\\n.*\\n.*\\n.*\\n.*\\n.*\\n.*",
+          "Cannot apply 'SUBSTRING' to arguments of type "
+              + ".*\\n.*\\n.*\\n.*\\n.*\\n.*\\n.*\\n.*",
           false);
       f.checkFails("substring('abc' from 1 for -1)",
           "Substring error: negative substring length not allowed",
@@ -11585,31 +11940,35 @@ public class SqlOperatorTest {
     // SQL:2003 6.29.11 Trimming a CHAR yields a VARCHAR
     f.checkString("trim('a' from 'aAa')", "A", "VARCHAR(3) NOT NULL");
     f.checkString("trim(both 'a' from 'aAa')", "A", "VARCHAR(3) NOT NULL");
+    f.checkString("trim(' aAa ')", "aAa", "VARCHAR(5) NOT NULL");
+    f.checkString("trim(both ' ' from ' aAa ')", "aAa", "VARCHAR(5) NOT NULL");
     f.checkString("trim(leading 'a' from 'aAa')", "Aa", "VARCHAR(3) NOT NULL");
     f.checkString("trim(trailing 'a' from 'aAa')", "aA", "VARCHAR(3) NOT NULL");
+    f.checkNull("trim(null)");
     f.checkNull("trim(cast(null as varchar(1)) from 'a')");
     f.checkNull("trim('a' from cast(null as varchar(1)))");
 
-    // SQL:2003 6.29.9: trim string must have length=1. Failure occurs
-    // at runtime.
-    //
-    // TODO: Change message to "Invalid argument\(s\) for
-    // 'TRIM' function".
-    // The message should come from a resource file, and should still
-    // have the SQL error code 22027.
+    // SQL:2003 6.29.9 and SQL:2016 6.30.11: trim string must have length=1.
+    // Failure occurs at runtime.
     f.checkFails("trim('xy' from 'abcde')",
-        "Trim error: trim character must be exactly 1 character",
+        "Invalid argument 'xy': the length of the string describing "
+            + "the trimmed character must be 1",
         true);
     f.checkFails("trim('' from 'abcde')",
-        "Trim error: trim character must be exactly 1 character",
+        "Invalid argument '': the length of the string describing "
+            + "the trimmed character must be 1",
         true);
 
-    final SqlOperatorFixture f1 = f.withConformance(SqlConformanceEnum.MYSQL_5);
-    f1.checkString("trim(leading 'eh' from 'hehe__hehe')", "__hehe",
-        "VARCHAR(10) NOT NULL");
-    f1.checkString("trim(trailing 'eh' from 'hehe__hehe')", "hehe__",
-        "VARCHAR(10) NOT NULL");
-    f1.checkString("trim('eh' from 'hehe__hehe')", "__", "VARCHAR(10) NOT NULL");
+    final Consumer<SqlOperatorFixture> consumer = f1 -> {
+      f1.checkString("trim(leading 'eh' from 'hehe__hehe')", "__hehe",
+          "VARCHAR(10) NOT NULL");
+      f1.checkString("trim(trailing 'eh' from 'hehe__hehe')", "hehe__",
+          "VARCHAR(10) NOT NULL");
+      f1.checkString("trim('eh' from 'hehe__hehe')", "__", "VARCHAR(10) NOT NULL");
+    };
+    final List<SqlConformanceEnum> conformanceEnums =
+        list(SqlConformanceEnum.MYSQL_5, SqlConformanceEnum.SQL_SERVER_2008);
+    f.forEachConformance(conformanceEnums, consumer);
   }
 
   @Test void testRtrimFunc() {
@@ -11624,7 +11983,7 @@ public class SqlOperatorTest {
     };
     final List<SqlLibrary> libraries =
         list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL,
-            SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
+            SqlLibrary.REDSHIFT, SqlLibrary.SPARK, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -11640,7 +11999,7 @@ public class SqlOperatorTest {
     };
     final List<SqlLibrary> libraries =
         list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.POSTGRESQL,
-            SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
+            SqlLibrary.REDSHIFT, SqlLibrary.SPARK, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -11664,7 +12023,7 @@ public class SqlOperatorTest {
           "VARCHAR(5) NOT NULL");
     };
     final List<SqlLibrary> libraries =
-        list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.SPARK);
+        list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -11686,7 +12045,8 @@ public class SqlOperatorTest {
       f.checkScalar("greatest(CAST(NULL AS INTEGER), CAST(NULL AS INTEGER))", isNullValue(),
           "INTEGER");
     };
-    final List<SqlLibrary> libraries = list(SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT);
+    final List<SqlLibrary> libraries =
+        list(SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -11710,8 +12070,48 @@ public class SqlOperatorTest {
           "VARCHAR(5) NOT NULL");
     };
     final List<SqlLibrary> libraries =
-        list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.SPARK);
+        list(SqlLibrary.BIG_QUERY, SqlLibrary.ORACLE, SqlLibrary.HIVE);
     f0.forEachLibrary(libraries, consumer);
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-6939">
+   * [CALCITE-6939] Add support for Lateral Column Alias</a>. */
+  @Test void testAliasInSelect() {
+    final SqlOperatorFixture f = fixture()
+        // Babel sets isSelectAlias to ANY
+        .withConformance(SqlConformanceEnum.BABEL);
+    // Y uses the local X
+    f.check("select Y from (select 1 AS x, x as Y)",
+        "INTEGER NOT NULL", "1");
+    // X used twice
+    f.check("select Y from (select 1 AS x, x+x as Y)",
+        "INTEGER NOT NULL", "2");
+    // Chain of uses
+    f.check("select W from (select 1 AS x, x+x as Y, y+y as Z, z+z as W)",
+        "INTEGER NOT NULL", "8");
+    // Out of order lookup
+    f.check("SELECT W FROM (select z+z AS W, y+y AS Z, x+x AS Y, 1 AS x)",
+        "INTEGER NOT NULL", "8");
+    // Duplicate local column definition
+    f.checkFails("SELECT ^x^ FROM (select 1 AS x, 2 as x)",
+        "Column 'X' is ambiguous", false);
+    // Duplicate local column definition
+    f.checkFails("SELECT W FROM (select 1 AS x, 2 as x, ^x^ as W)",
+        "Column 'X' is ambiguous", false);
+    // Inner columns are not used if scope includes outer columns
+    f.check("SELECT W FROM (SELECT 1 AS X, X AS W FROM (SELECT 2 AS X))",
+        "INTEGER NOT NULL", "2");
+    // Circular dependency
+    f.checkFails("SELECT X FROM (SELECT ^X^ AS Y, Y AS X)",
+        "The definition of column 'X' depends on itself through "
+            + "the following columns: 'X', 'Y'", false);
+    // Circular dependency
+    f.checkFails("SELECT X FROM (SELECT ^X^ + 1 AS Y, Y + 1 AS X)",
+        "The definition of column 'X' depends on itself through "
+            + "the following columns: 'X', 'Y'", false);
+    // No circular dependency if a column is defined in an outer scope
+    f.check("SELECT X FROM (SELECT X + 1 AS Y, Y + 1 AS X FROM (SELECT 2 AS X))",
+        "INTEGER NOT NULL", "4");
   }
 
   /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-5634">
@@ -11732,7 +12132,8 @@ public class SqlOperatorTest {
       f.checkScalar("least(CAST(NULL AS INTEGER), CAST(NULL AS INTEGER))", isNullValue(),
           "INTEGER");
     };
-    final List<SqlLibrary> libraries = list(SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT);
+    final List<SqlLibrary> libraries =
+        list(SqlLibrary.POSTGRESQL, SqlLibrary.REDSHIFT, SqlLibrary.SPARK);
     f0.forEachLibrary(libraries, consumer);
   }
 
@@ -11745,7 +12146,7 @@ public class SqlOperatorTest {
   @Test void testNvlFunc() {
     final SqlOperatorFixture f = fixture();
     f.setFor(SqlLibraryOperators.NVL, VmName.EXPAND);
-    final SqlOperatorFixture f12 = f
+    SqlOperatorFixture f12 = f
         .withLibrary(SqlLibrary.ORACLE)
         .forOracle(SqlConformanceEnum.ORACLE_12);
     f12.checkString("nvl('abc', 'de')", "abc", "VARCHAR(3) NOT NULL");
@@ -11825,6 +12226,7 @@ public class SqlOperatorTest {
     checkDecodeFunc(fixture().withLibrary(SqlLibrary.ORACLE));
     checkDecodeFunc(fixture().withLibrary(SqlLibrary.REDSHIFT));
     checkDecodeFunc(fixture().withLibrary(SqlLibrary.SPARK));
+    checkDecodeFunc(fixture().withLibrary(SqlLibrary.HIVE));
   }
 
   private static void checkDecodeFunc(SqlOperatorFixture f) {
@@ -12087,6 +12489,28 @@ public class SqlOperatorTest {
         "No match found for function signature STRING_AGG\\(<CHARACTER>, "
             + "<CHARACTER>\\)",
         false);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6951">[CALCITE-6951]
+   * Add STRING_TO_ARRAY function(enabled in PostgreSQL Library)</a>. */
+  @Test void testStringToArrayFunc() {
+    final SqlOperatorFixture f0 = fixture();
+    f0.setFor(SqlLibraryOperators.STRING_TO_ARRAY);
+    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.POSTGRESQL);
+    f.checkNull("string_to_array(NULL, ' ')");
+    f.checkScalar("string_to_array('', '')", "[]",
+        "CHAR(0) NOT NULL ARRAY NOT NULL");
+    f.checkScalar("string_to_array('ab', NULL)",
+        "[a, b]", "CHAR(2) NOT NULL ARRAY");
+    f.checkScalar("string_to_array('www apache org', ' ')",
+        "[www, apache, org]", "CHAR(14) NOT NULL ARRAY NOT NULL");
+    f.checkScalar("string_to_array('www apache org', ' ', 'apache')",
+        "[www, null, org]", "CHAR(14) NOT NULL ARRAY NOT NULL");
+    f.checkFails("^string_to_array(NULL)^",
+        "Invalid number of arguments to function 'STRING_TO_ARRAY'.*", false);
+    f.checkFails("^string_to_array(NULL, NULL, NULL, NULL)^",
+        "Invalid number of arguments to function 'STRING_TO_ARRAY'.*", false);
   }
 
   @Test void testGroupConcatFunc() {
@@ -12769,64 +13193,68 @@ public class SqlOperatorTest {
     f.checkFails("^array[1, '1', true]^", "Parameters must be of the same type", false);
   }
 
-  /** Test case for {@link SqlLibraryOperators#ARRAY} (Spark). */
+  /** Test case for {@link SqlLibraryOperators#ARRAY} (Spark, Hive). */
   @Test void testArrayFunction() {
     final SqlOperatorFixture f = fixture();
     f.setFor(SqlLibraryOperators.ARRAY, VmName.EXPAND);
+    final List<SqlLibrary> libraries =
+        ImmutableList.of(SqlLibrary.HIVE, SqlLibrary.SPARK);
     f.checkFails("^array()^",
         "No match found for function signature ARRAY\\(\\)", false);
     f.checkFails("^array('foo')^",
         "No match found for function signature ARRAY\\(<CHARACTER>\\)", false);
-    final SqlOperatorFixture f2 = f.withLibrary(SqlLibrary.SPARK);
-    f2.checkScalar("array('foo')",
-        "[foo]", "CHAR(3) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array('foo', 'bar')",
-        "[foo, bar]", "CHAR(3) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array()",
-        "[]", "UNKNOWN NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array('foo', null)",
-        "[foo, null]", "CHAR(3) ARRAY NOT NULL");
-    f2.checkScalar("array(null, 'foo')",
-        "[null, foo]", "CHAR(3) ARRAY NOT NULL");
-    f2.checkScalar("array(null)",
-        "[null]", "NULL ARRAY NOT NULL");
-    // check complex type
-    f2.checkScalar("array(row(1))", "[{1}]",
-        "RecordType(INTEGER NOT NULL EXPR$0) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(1, null))", "[{1, null}]",
-        "RecordType(INTEGER NOT NULL EXPR$0, NULL EXPR$1) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(null, 1))", "[{null, 1}]",
-        "RecordType(NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(1, 2))", "[{1, 2}]",
-        "RecordType(INTEGER NOT NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(1, 2), null)",
-        "[{1, 2}, null]", "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) ARRAY NOT NULL");
-    f2.checkScalar("array(null, row(1, 2))",
-        "[null, {1, 2}]", "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) ARRAY NOT NULL");
-    f2.checkScalar("array(row(1, null), row(2, null))", "[{1, null}, {2, null}]",
-        "RecordType(INTEGER NOT NULL EXPR$0, NULL EXPR$1) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(null, 1), row(null, 2))", "[{null, 1}, {null, 2}]",
-        "RecordType(NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(1, null), row(null, 2))", "[{1, null}, {null, 2}]",
-        "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(null, 1), row(2, null))", "[{null, 1}, {2, null}]",
-        "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(row(1, 2), row(3, 4))", "[{1, 2}, {3, 4}]",
-        "RecordType(INTEGER NOT NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
-    // checkFails
-    f2.checkFails("^array(row(1), row(2, 3))^",
-        "Parameters must be of the same type", false);
-    f2.checkFails("^array(row(1), row(2, 3), null)^",
-        "Parameters must be of the same type", false);
-    // calcite default cast char type will fill extra spaces
-    f2.checkScalar("array(1, 2, 'Hi')",
-        "[1 , 2 , Hi]", "CHAR(2) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(1, 2, 'Hi', 'Hello')",
-        "[1    , 2    , Hi   , Hello]", "CHAR(5) NOT NULL ARRAY NOT NULL");
-    f2.checkScalar("array(1, 2, 'Hi', null)",
-        "[1 , 2 , Hi, null]", "CHAR(2) ARRAY NOT NULL");
-    f2.checkScalar("array(1, 2, 'Hi', cast(null as char(10)))",
-        "[1         , 2         , Hi        , null]", "CHAR(10) ARRAY NOT NULL");
+    final Consumer<SqlOperatorFixture> consumer = f2 -> {
+      f2.checkScalar("array('foo')",
+          "[foo]", "CHAR(3) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array('foo', 'bar')",
+          "[foo, bar]", "CHAR(3) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array()",
+          "[]", "UNKNOWN NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array('foo', null)",
+          "[foo, null]", "CHAR(3) ARRAY NOT NULL");
+      f2.checkScalar("array(null, 'foo')",
+          "[null, foo]", "CHAR(3) ARRAY NOT NULL");
+      f2.checkScalar("array(null)",
+          "[null]", "NULL ARRAY NOT NULL");
+      // check complex type
+      f2.checkScalar("array(row(1))", "[{1}]",
+          "RecordType(INTEGER NOT NULL EXPR$0) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(1, null))", "[{1, null}]",
+          "RecordType(INTEGER NOT NULL EXPR$0, NULL EXPR$1) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(null, 1))", "[{null, 1}]",
+          "RecordType(NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(1, 2))", "[{1, 2}]",
+          "RecordType(INTEGER NOT NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(1, 2), null)",
+          "[{1, 2}, null]", "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) ARRAY NOT NULL");
+      f2.checkScalar("array(null, row(1, 2))",
+          "[null, {1, 2}]", "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) ARRAY NOT NULL");
+      f2.checkScalar("array(row(1, null), row(2, null))", "[{1, null}, {2, null}]",
+          "RecordType(INTEGER NOT NULL EXPR$0, NULL EXPR$1) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(null, 1), row(null, 2))", "[{null, 1}, {null, 2}]",
+          "RecordType(NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(1, null), row(null, 2))", "[{1, null}, {null, 2}]",
+          "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(null, 1), row(2, null))", "[{null, 1}, {2, null}]",
+          "RecordType(INTEGER EXPR$0, INTEGER EXPR$1) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(row(1, 2), row(3, 4))", "[{1, 2}, {3, 4}]",
+          "RecordType(INTEGER NOT NULL EXPR$0, INTEGER NOT NULL EXPR$1) NOT NULL ARRAY NOT NULL");
+      // checkFails
+      f2.checkFails("^array(row(1), row(2, 3))^",
+          "Parameters must be of the same type", false);
+      f2.checkFails("^array(row(1), row(2, 3), null)^",
+          "Parameters must be of the same type", false);
+      // calcite default cast char type will fill extra spaces
+      f2.checkScalar("array(1, 2, 'Hi')",
+          "[1 , 2 , Hi]", "CHAR(2) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(1, 2, 'Hi', 'Hello')",
+          "[1    , 2    , Hi   , Hello]", "CHAR(5) NOT NULL ARRAY NOT NULL");
+      f2.checkScalar("array(1, 2, 'Hi', null)",
+          "[1 , 2 , Hi, null]", "CHAR(2) ARRAY NOT NULL");
+      f2.checkScalar("array(1, 2, 'Hi', cast(null as char(10)))",
+          "[1         , 2         , Hi        , null]", "CHAR(10) ARRAY NOT NULL");
+    };
+    f.forEachLibrary(libraries, consumer);
   }
 
   @Test void testArrayQueryConstructor() {
@@ -12906,7 +13334,8 @@ public class SqlOperatorTest {
         "Cannot apply 'ITEM' to arguments of type 'ITEM\\(<CHAR\\(3\\) ARRAY>, "
             + "<CHAR\\(3\\)>\\)'\\. Supported form\\(s\\): <ARRAY>\\[<INTEGER>\\]\n"
             + "<MAP>\\[<ANY>\\]\n"
-            + "<ROW>\\[<CHARACTER>\\|<INTEGER>\\]",
+            + "<ROW>\\[<CHARACTER>\\|<INTEGER>\\]\n"
+            + "<VARIANT>\\[<ANY>\\]",
         false);
 
     // Array of INTEGER NOT NULL is interesting because we might be tempted
@@ -12935,10 +13364,9 @@ public class SqlOperatorTest {
     f.check("select \"T\".\"X\"[2] "
             + "from (VALUES (ROW(ROW(3, CAST(NULL AS INTEGER)), ROW(4, 8)))) as T(x, y)",
         SqlTests.ANY_TYPE_CHECKER, isNullValue());
-    f.checkFails("select \"T\".\"X\"[1 + CAST(NULL AS INTEGER)] "
+    f.checkFails("select ^\"T\".\"X\"[1 + CAST(NULL AS INTEGER)]^ "
             + "from (VALUES (ROW(ROW(3, CAST(NULL AS INTEGER)), ROW(4, 8)))) as T(x, y)",
-        "Cannot infer type of field at position null within ROW type: "
-            + "RecordType\\(INTEGER EXPR\\$0, INTEGER EXPR\\$1\\)", false);
+        "Index in ROW type does not have a constant integer or string value", false);
   }
 
   @Test void testOffsetOperator() {
@@ -14228,53 +14656,56 @@ public class SqlOperatorTest {
         "No match found for function signature "
             + "DATE_ADD\\(<DATE>, <NUMERIC>\\)", false);
 
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("date_add(date '2016-02-22', 2)",
-        "2016-02-24",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '2016-02-28', 2)",
-        "2016-03-01",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '2016-03-01', -2)",
-        "2016-02-28",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '2016-03-01', -2)",
-        "2016-02-28",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '2016-03-01', -2.0)",
-        "2016-02-28",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '2016-02-28', 2.0)",
-        "2016-03-01",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '2016-02-28', '2.0')",
-        "2016-03-01",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(timestamp '2016-02-22 13:00:01', '-2.0')",
-        "2016-02-20",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(timestamp '2016-02-22 13:00:01', -2)",
-        "2016-02-20",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(timestamp '2016-02-22 13:00:01', -2.0)",
-        "2016-02-20",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '0001-01-01', '-2.0')",
-        "0000-12-30",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '0001-01-01', '-367')",
-        "000/-12-31",
-        "DATE NOT NULL");
-    f.checkScalar("date_add(date '0001-01-01', '-3')",
-        "0000-12-29",
-        "DATE NOT NULL");
-    f.checkNull("date_add(CAST(NULL AS DATE), 5)");
-    f.checkNull("date_add(date '2016-02-22', CAST(NULL AS INTEGER))");
-    f.checkNull("date_add(CAST(NULL AS DATE), CAST(NULL AS INTEGER))");
-    f.checkFails("^date_add(time '13:00:01', -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
-            false);
-    f.checkFails("^date_add(1, -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
-        false);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("date_add(date '2016-02-22', 2)",
+          "2016-02-24",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '2016-02-28', 2)",
+          "2016-03-01",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '2016-03-01', -2)",
+          "2016-02-28",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '2016-03-01', -2)",
+          "2016-02-28",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '2016-03-01', -2.0)",
+          "2016-02-28",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '2016-02-28', 2.0)",
+          "2016-03-01",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '2016-02-28', '2.0')",
+          "2016-03-01",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(timestamp '2016-02-22 13:00:01', '-2.0')",
+          "2016-02-20",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(timestamp '2016-02-22 13:00:01', -2)",
+          "2016-02-20",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(timestamp '2016-02-22 13:00:01', -2.0)",
+          "2016-02-20",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '0001-01-01', '-2.0')",
+          "0000-12-30",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '0001-01-01', '-367')",
+          "000/-12-31",
+          "DATE NOT NULL");
+      f.checkScalar("date_add(date '0001-01-01', '-3')",
+          "0000-12-29",
+          "DATE NOT NULL");
+      f.checkNull("date_add(CAST(NULL AS DATE), 5)");
+      f.checkNull("date_add(date '2016-02-22', CAST(NULL AS INTEGER))");
+      f.checkNull("date_add(CAST(NULL AS DATE), CAST(NULL AS INTEGER))");
+      f.checkFails("^date_add(time '13:00:01', -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
+          false);
+      f.checkFails("^date_add(1, -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
+          false);
+    };
+
+    f0.forEachLibrary(list(SqlLibrary.SPARK, SqlLibrary.HIVE), consumer);
   }
 
   /** Test case for
@@ -14284,31 +14715,33 @@ public class SqlOperatorTest {
   @Test void testDateSubSpark() {
     final SqlOperatorFixture f0 = fixture()
         .setFor(SqlLibraryOperators.DATE_SUB_SPARK);
+
     f0.checkFails("^date_sub(date '2008-12-25', "
             + "5)^",
         "No match found for function signature "
             + "DATE_SUB\\(<DATE>, <NUMERIC>\\)", false);
-
-    final SqlOperatorFixture f = f0.withLibrary(SqlLibrary.SPARK);
-    f.checkScalar("date_sub(date '2016-02-22', 2)",
-        "2016-02-20",
-        "DATE NOT NULL");
-    f.checkScalar("date_sub(date '2016-03-01', 2)",
-        "2016-02-28",
-        "DATE NOT NULL");
-    f.checkScalar("date_sub(timestamp '2016-02-22 13:00:01', '-2.0')",
-        "2016-02-24",
-        "DATE NOT NULL");
-    f.checkScalar("date_sub(timestamp '2016-02-22 13:00:01', -2)",
-        "2016-02-24",
-        "DATE NOT NULL");
-    f.checkNull("date_sub(CAST(NULL AS DATE), 5)");
-    f.checkNull("date_sub(date '2016-02-22', CAST(NULL AS INTEGER))");
-    f.checkNull("date_sub(CAST(NULL AS DATE), CAST(NULL AS INTEGER))");
-    f.checkFails("^date_sub(time '13:00:01', -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
-        false);
-    f.checkFails("^date_sub(1, -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
-        false);
+    final Consumer<SqlOperatorFixture> consumer = f -> {
+      f.checkScalar("date_sub(date '2016-02-22', 2)",
+          "2016-02-20",
+          "DATE NOT NULL");
+      f.checkScalar("date_sub(date '2016-03-01', 2)",
+          "2016-02-28",
+          "DATE NOT NULL");
+      f.checkScalar("date_sub(timestamp '2016-02-22 13:00:01', '-2.0')",
+          "2016-02-24",
+          "DATE NOT NULL");
+      f.checkScalar("date_sub(timestamp '2016-02-22 13:00:01', -2)",
+          "2016-02-24",
+          "DATE NOT NULL");
+      f.checkNull("date_sub(CAST(NULL AS DATE), 5)");
+      f.checkNull("date_sub(date '2016-02-22', CAST(NULL AS INTEGER))");
+      f.checkNull("date_sub(CAST(NULL AS DATE), CAST(NULL AS INTEGER))");
+      f.checkFails("^date_sub(time '13:00:01', -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
+          false);
+      f.checkFails("^date_sub(1, -2)^", INVALID_ARGUMENTS_TYPE_VALIDATION_ERROR,
+          false);
+    };
+    f0.forEachLibrary(list(SqlLibrary.SPARK, SqlLibrary.HIVE), consumer);
   }
 
   /** Test case for
@@ -15402,6 +15835,9 @@ public class SqlOperatorTest {
     f.checkAgg("stddev(x)", new String[]{"5"}, isNullValue());
     // with zero values
     f.checkAgg("stddev(x)", new String[]{}, isNullValue());
+    // NaN fix check
+    final String[] values = {"cast(23.79 as double)", "23.79", "23.79"};
+    f.checkAgg("stddev(x)", values, isExactly(0));
   }
 
   @Test void testVarPopFunc() {
@@ -15473,6 +15909,9 @@ public class SqlOperatorTest {
     f.checkType("variance(cast(null as varchar(2)))", "DECIMAL(19, 9)");
     f.checkType("variance(CAST(NULL AS INTEGER))", "INTEGER");
     f.checkAggType("variance(DISTINCT 1.5)", "DECIMAL(2, 1) NOT NULL");
+
+    final String[] values2 = {"cast(64.34 as double)", "64.34", "64.34"};
+    f.checkAgg("variance(x)", values2, isExactly(0));
     final String[] values = {"0", "CAST(null AS FLOAT)", "3", "3"};
     if (!f.brokenTestsEnabled()) {
       return;
@@ -15690,6 +16129,76 @@ public class SqlOperatorTest {
     f.check("SELECT (SELECT * FROM UNNEST(ARRAY[3]) LIMIT 1) = "
             + "all(x.t) FROM (SELECT ARRAY[3,3] as t) as x",
         "BOOLEAN", true);
+  }
+
+  @Test void testQuantifyOperatorsWithTypeException() {
+    final SqlOperatorFixture f = fixture();
+    QUANTIFY_OPERATORS.forEach(operator -> f.setFor(operator, SqlOperatorFixture.VmName.EXPAND));
+    // some(List value)
+    f.checkFails("SELECT ^cast(true as boolean) = some(1, 2, 3)^",
+        "Values passed to = SOME operator must have compatible types", false);
+    // some(Collection value)
+    f.checkFails("^cast(true as boolean) = some (ARRAY[2,3,null])^",
+        "Values passed to = SOME operator must have compatible types", false);
+    f.checkFails("^cast(true as boolean) <> some (ARRAY[1,2,null])^",
+        "Values passed to <> SOME operator must have compatible types", false);
+    f.checkFails("^cast(true as boolean) < some (ARRAY[1,2,null])^",
+        "Values passed to < SOME operator must have compatible types", false);
+    f.checkFails("^cast(true as boolean) <= some (ARRAY[1,2,null])^",
+        "Values passed to <= SOME operator must have compatible types", false);
+    f.checkFails("^cast(true as boolean) > some (ARRAY[1,2,null])^",
+        "Values passed to > SOME operator must have compatible types", false);
+    f.checkFails("^cast(true as boolean) >= some (ARRAY[1,2,null])^",
+        "Values passed to >= SOME operator must have compatible types", false);
+    f.checkFails(
+        "SELECT ^cast(true as boolean) = some(x.t)^ FROM (SELECT ARRAY[1,2,3,null] as t) as x",
+        "Values passed to = SOME operator must have compatible types", false);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6950">[CALCITE-6950]
+   * Use ANY operator to check if an element exists in an array throws exception</a>. */
+  @Test void testQuantifyOperatorsWithTypeCoercion() {
+    final SqlOperatorFixture f = fixture();
+    QUANTIFY_OPERATORS.forEach(operator -> f.setFor(operator, SqlOperatorFixture.VmName.EXPAND));
+
+    f.checkNull("1.0 = some (ARRAY[2,3,null])");
+    f.checkNull("1.0 = some (ARRAY[2,null,3])");
+    f.enableTypeCoercion(false).checkFails(
+        "^1.0 = some (ARRAY[2,3,null])^",
+        "Values passed to = SOME operator must have compatible types",
+        false);
+
+    f.checkBoolean("1.0 = some (ARRAY[1,2,null])", true);
+    f.checkBoolean("3.0 = some (ARRAY[1,2])", false);
+    f.enableTypeCoercion(false).checkFails(
+        "^3.0 = some (ARRAY[1,2])^",
+        "Values passed to = SOME operator must have compatible types",
+        false);
+
+    f.checkBoolean(
+        "'1970-01-01 01:23:45' = any (array[timestamp '1970-01-01 01:23:45',"
+            + "timestamp '1970-01-01 01:23:46'])", true);
+    f.checkBoolean(
+        "'1970-01-01 01:23:47' = any (array[timestamp '1970-01-01 01:23:45',"
+            + "timestamp '1970-01-01 01:23:46'])", false);
+    f.enableTypeCoercion(false).checkFails(
+        "^'1970-01-01 01:23:47' = any (array[timestamp '1970-01-01 01:23:45',"
+            + "timestamp '1970-01-01 01:23:46'])^",
+        "Values passed to = SOME operator must have compatible types",
+        false);
+
+    f.checkBoolean(
+        "cast('1970-01-01 01:23:45' as timestamp) = any (array['1970-01-01 01:23:45',"
+            + "'1970-01-01 01:23:46'])", true);
+    f.checkBoolean(
+        "cast('1970-01-01 01:23:47' as timestamp) = any (array['1970-01-01 01:23:45',"
+            + "'1970-01-01 01:23:46'])", false);
+    f.enableTypeCoercion(false).checkFails(
+        "^cast('1970-01-01 01:23:47' as timestamp) = any (array['1970-01-01 01:23:45',"
+            + "'1970-01-01 01:23:46'])^",
+        "Values passed to = SOME operator must have compatible types",
+        false);
   }
 
   @Test void testAnyValueFunc() {
@@ -16155,6 +16664,30 @@ public class SqlOperatorTest {
 
   @Test void testBitCountMySQLFunc() {
     checkBitCount(SqlLibraryOperators.BIT_COUNT_MYSQL, list(SqlLibrary.MYSQL), true);
+    checkBitCountMySQL();
+  }
+
+  /**
+   * Test cases for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-6700">[CALCITE-6700]
+   * MySQL BIT_COUNT function should return result when parameter
+   * is Boolean, String, Date, Time and Timestamp types</a>. */
+  private void checkBitCountMySQL() {
+    final SqlOperatorFixture f = fixture()
+        .setFor(SqlLibraryOperators.BIT_COUNT_MYSQL, VmName.EXPAND)
+        .withLibrary(SqlLibrary.MYSQL);
+
+    f.checkScalar("BIT_COUNT(8)", "1", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT('8')", "1", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT('10')", "2", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT('a')", "0", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT('')", "0", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT(1 + 1)", "1", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT(true)", "1", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT(false)", "0", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT(DATE '1996-08-03')", "12", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT(TIME '16:22:34')", "11", "BIGINT NOT NULL");
+    f.checkScalar("BIT_COUNT(TIMESTAMP '1996-08-03 16:22:34')", "24", "BIGINT NOT NULL");
   }
 
   void checkBitCount(SqlFunction function, @Nullable  List<SqlLibrary> libraries,

@@ -52,6 +52,14 @@ class BabelParserTest extends SqlParserTest {
         .withConfig(c -> c.withParserFactory(SqlBabelParserImpl.FACTORY));
   }
 
+  /** Tests that the Babel parser correctly parses a CAST to INTERVAL type
+   * in PostgreSQL dialect. */
+  @Test void testCastToInterval() {
+    SqlParserFixture postgreF = fixture().withDialect(PostgresqlSqlDialect.DEFAULT);
+    postgreF.sql("select cast(x as interval)")
+        .ok("SELECT CAST(\"x\" AS INTERVAL SECOND)");
+  }
+
   @Test void testReservedWords() {
     assertThat(isReserved("escape"), is(false));
   }
@@ -189,8 +197,8 @@ class BabelParserTest extends SqlParserTest {
     sql("select date(x) from t").ok(expected);
   }
 
-  /** In Redshift, PostgreSQL the DATEADD, DATEDIFF and DATE_PART functions have
-   * ordinary function syntax except that its first argument is a time unit
+  /** The DATEADD, DATEDIFF (in Redshift, Snowflake) and DATE_PART (in PostgreSQL)
+   * functions have ordinary function syntax  except that its first argument is a time unit
    * (e.g. DAY). We must not parse that first argument as an identifier. */
   @Test void testRedshiftFunctionsWithDateParts() {
     final String sql = "SELECT DATEADD(day, 1, t),\n"
@@ -327,6 +335,13 @@ class BabelParserTest extends SqlParserTest {
     final String sql = "create volatile table foo (bar int not null, baz varchar(30))";
     final String expected = "CREATE VOLATILE TABLE `FOO` "
         + "(`BAR` INTEGER NOT NULL, `BAZ` VARCHAR(30))";
+    sql(sql).ok(expected);
+  }
+
+  @Test void testCreateVariantTable() {
+    final String sql = "create table foo (bar variant not null)";
+    final String expected = "CREATE TABLE `FOO` "
+        + "(`BAR` VARIANT NOT NULL)";
     sql(sql).ok(expected);
   }
 

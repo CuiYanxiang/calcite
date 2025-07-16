@@ -111,6 +111,10 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
     rule.add(SqlTypeName.SMALLINT);
     rule.add(SqlTypeName.INTEGER);
     rule.add(SqlTypeName.BIGINT);
+    rule.add(SqlTypeName.UTINYINT);
+    rule.add(SqlTypeName.USMALLINT);
+    rule.add(SqlTypeName.UINTEGER);
+    rule.add(SqlTypeName.UBIGINT);
     rule.add(SqlTypeName.DECIMAL);
     rule.add(SqlTypeName.FLOAT);
     rule.add(SqlTypeName.REAL);
@@ -126,6 +130,10 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
     coerceRules.add(SqlTypeName.SMALLINT, rule);
     coerceRules.add(SqlTypeName.INTEGER, rule);
     coerceRules.add(SqlTypeName.BIGINT, rule);
+    coerceRules.add(SqlTypeName.UTINYINT, rule);
+    coerceRules.add(SqlTypeName.USMALLINT, rule);
+    coerceRules.add(SqlTypeName.UINTEGER, rule);
+    coerceRules.add(SqlTypeName.UBIGINT, rule);
     coerceRules.add(SqlTypeName.FLOAT, rule);
     coerceRules.add(SqlTypeName.REAL, rule);
     coerceRules.add(SqlTypeName.DECIMAL, rule);
@@ -149,6 +157,10 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
               .add(SqlTypeName.SMALLINT)
               .add(SqlTypeName.INTEGER)
               .add(SqlTypeName.BIGINT)
+              .add(SqlTypeName.UTINYINT)
+              .add(SqlTypeName.USMALLINT)
+              .add(SqlTypeName.UINTEGER)
+              .add(SqlTypeName.UBIGINT)
               .add(SqlTypeName.DECIMAL)
               .add(SqlTypeName.CHAR)
               .add(SqlTypeName.VARCHAR)
@@ -160,6 +172,7 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
         coerceRules.copyValues(SqlTypeName.BINARY)
             .add(SqlTypeName.VARBINARY)
             .addAll(SqlTypeName.CHAR_TYPES)
+            .add(SqlTypeName.UUID)
             .build());
 
     // VARBINARY is castable from BINARY, CHARACTERS.
@@ -167,9 +180,10 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
         coerceRules.copyValues(SqlTypeName.VARBINARY)
             .add(SqlTypeName.BINARY)
             .addAll(SqlTypeName.CHAR_TYPES)
+            .add(SqlTypeName.UUID)
             .build());
 
-    // VARCHAR is castable from BOOLEAN, DATE, TIME, TIMESTAMP, numeric types, binary and
+    // VARCHAR is castable from BOOLEAN, DATE, TIME, TIMESTAMP, numeric types, binary, uuid, and
     // intervals
     coerceRules.add(SqlTypeName.VARCHAR,
         coerceRules.copyValues(SqlTypeName.VARCHAR)
@@ -185,9 +199,10 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
             .addAll(SqlTypeName.BINARY_TYPES)
             .addAll(SqlTypeName.NUMERIC_TYPES)
             .addAll(SqlTypeName.INTERVAL_TYPES)
+            .add(SqlTypeName.UUID)
             .build());
 
-    // CHAR is castable from BOOLEAN, DATE, TIME, TIMESTAMP, numeric types, binary and
+    // CHAR is castable from BOOLEAN, DATE, TIME, TIMESTAMP, numeric types, binary, uuid, and
     // intervals
     coerceRules.add(SqlTypeName.CHAR,
         coerceRules.copyValues(SqlTypeName.CHAR)
@@ -203,6 +218,7 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
             .addAll(SqlTypeName.BINARY_TYPES)
             .addAll(SqlTypeName.NUMERIC_TYPES)
             .addAll(SqlTypeName.INTERVAL_TYPES)
+            .add(SqlTypeName.UUID)
             .build());
 
     // BOOLEAN is castable from ...
@@ -211,6 +227,15 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
             .add(SqlTypeName.CHAR)
             .add(SqlTypeName.VARCHAR)
             .addAll(SqlTypeName.NUMERIC_TYPES)
+            .build());
+
+    // UUID is castable from ...
+    coerceRules.add(SqlTypeName.UUID,
+        coerceRules.copyValues(SqlTypeName.UUID)
+            .add(SqlTypeName.VARCHAR)
+            .add(SqlTypeName.CHAR)
+            .add(SqlTypeName.BINARY)
+            .add(SqlTypeName.VARBINARY)
             .build());
 
     // DATE, TIME, and TIMESTAMP are castable from
@@ -326,6 +351,10 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
     rule.add(SqlTypeName.SMALLINT);
     rule.add(SqlTypeName.INTEGER);
     rule.add(SqlTypeName.BIGINT);
+    rule.add(SqlTypeName.UTINYINT);
+    rule.add(SqlTypeName.USMALLINT);
+    rule.add(SqlTypeName.UINTEGER);
+    rule.add(SqlTypeName.UBIGINT);
     rule.add(SqlTypeName.DECIMAL);
     rule.add(SqlTypeName.FLOAT);
     rule.add(SqlTypeName.REAL);
@@ -342,6 +371,10 @@ public class SqlTypeCoercionRule implements SqlTypeMappingRule {
     coerceRules.add(SqlTypeName.SMALLINT, rule);
     coerceRules.add(SqlTypeName.INTEGER, rule);
     coerceRules.add(SqlTypeName.BIGINT, rule);
+    coerceRules.add(SqlTypeName.UTINYINT, rule);
+    coerceRules.add(SqlTypeName.USMALLINT, rule);
+    coerceRules.add(SqlTypeName.UINTEGER, rule);
+    coerceRules.add(SqlTypeName.UBIGINT, rule);
 
     // Lenient casting allowing ARRAY to be casted from CHAR and VARCHAR.
     coerceRules.add(SqlTypeName.ARRAY,

@@ -253,6 +253,28 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
     return canonize(newType);
   }
 
+  @Override public RelDataType enforceTypeWithNullability(
+      final RelDataType type,
+      final boolean nullable) {
+    final RelDataType newType;
+    if (type instanceof BasicSqlType) {
+      newType = ((BasicSqlType) type).createWithNullability(nullable);
+    } else if (type instanceof MapSqlType) {
+      newType = copyMapType(type, nullable);
+    } else if (type instanceof ArraySqlType) {
+      newType = copyArrayType(type, nullable);
+    } else if (type instanceof MultisetSqlType) {
+      newType = copyMultisetType(type, nullable);
+    } else if (type instanceof IntervalSqlType) {
+      newType = copyIntervalType(type, nullable);
+    } else if (type instanceof ObjectSqlType) {
+      newType = copyObjectType(type, nullable);
+    } else {
+      return super.enforceTypeWithNullability(type, nullable);
+    }
+    return canonize(newType);
+  }
+
   private static void assertBasic(SqlTypeName typeName) {
     assert typeName != null;
     assert typeName != SqlTypeName.MULTISET
@@ -319,6 +341,8 @@ public class SqlTypeFactoryImpl extends RelDataTypeFactoryImpl {
             ? createSqlType(typeName, type.getPrecision())
             : createSqlType(typeName);
         type = createTypeWithNullability(type, originalType.isNullable());
+        // update java type's family
+        family = type.getFamily();
       }
 
       if (resultType == null) {

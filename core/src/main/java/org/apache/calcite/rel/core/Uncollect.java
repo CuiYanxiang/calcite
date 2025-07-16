@@ -167,22 +167,29 @@ public class Uncollect extends SingleRel {
     for (int i = 0; i < fields.size(); i++) {
       RelDataTypeField field = fields.get(i);
       if (field.getType() instanceof MapSqlType) {
+        // This code is similar to SqlUnnestOperator::inferReturnType.
         MapSqlType mapType = (MapSqlType) field.getType();
         builder.add(SqlUnnestOperator.MAP_KEY_COLUMN_NAME, mapType.getKeyType());
         builder.add(SqlUnnestOperator.MAP_VALUE_COLUMN_NAME, mapType.getValueType());
       } else {
-        RelDataType ret = field.getType().getComponentType();
-        if (null == ret) {
+        RelDataType componentType = field.getType().getComponentType();
+        if (null == componentType) {
           throw RESOURCE.unnestArgument().ex();
         }
-
+        boolean isNullable = componentType.isNullable();
         if (requireAlias) {
-          builder.add(itemAliases.get(i), ret);
-        } else if (ret.isStruct()) {
-          builder.addAll(ret.getFieldList());
+          builder.add(itemAliases.get(i), componentType);
+        } else if (componentType.isStruct()) {
+          for (RelDataTypeField fieldInfo : componentType.getFieldList()) {
+            RelDataType fieldType = fieldInfo.getType();
+            if (isNullable) {
+              fieldType = typeFactory.enforceTypeWithNullability(fieldType, true);
+            }
+            builder.add(fieldInfo.getName(), fieldType);
+          }
         } else {
           // Element type is not a record, use the field name of the element directly
-          builder.add(field.getName(), ret);
+          builder.add(field.getName(), componentType);
         }
       }
     }

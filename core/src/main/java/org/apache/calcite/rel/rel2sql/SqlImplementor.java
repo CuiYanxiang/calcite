@@ -16,6 +16,7 @@
  */
 package org.apache.calcite.rel.rel2sql;
 
+import org.apache.calcite.adapter.jdbc.JdbcCorrelationDataContext;
 import org.apache.calcite.config.CalciteSystemProperty;
 import org.apache.calcite.linq4j.Ord;
 import org.apache.calcite.linq4j.tree.Expressions;
@@ -33,6 +34,7 @@ import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.Window;
 import org.apache.calcite.rel.rules.AggregateProjectConstantToDummyJoinRule;
+import org.apache.calcite.rel.rules.FullToLeftAndRightJoinRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeField;
@@ -165,8 +167,12 @@ public abstract class SqlImplementor {
 
   protected final Map<CorrelationId, Context> correlTableMap = new HashMap<>();
 
-  /** Private RexBuilder for short-lived expressions. It has its own
-   * dedicated type factory, so don't trust the types to be canonized. */
+  /**
+   * Private RexBuilder for short-lived expressions. It has its own
+   * dedicated type factory, so don't trust the types to be canonized.
+   *
+   * @deprecated Replaced by {@link RexBuilder#DEFAULT}. */
+  @Deprecated // to be removed before 2.0
   final RexBuilder rexBuilder =
       new RexBuilder(new SqlTypeFactoryImpl(RelDataTypeSystemImpl.DEFAULT));
 
@@ -177,10 +183,17 @@ public abstract class SqlImplementor {
   /** Visits a relational expression that has no parent. */
   public final Result visitRoot(RelNode r) {
     RelNode best;
-    if (!this.dialect.supportsGroupByLiteral()) {
+    if (!this.dialect.supportsGroupByLiteral()
+        || !this.dialect.supportsJoinType(JoinRelType.FULL)) {
       HepProgramBuilder hepProgramBuilder = new HepProgramBuilder();
-      hepProgramBuilder.addRuleInstance(
-          AggregateProjectConstantToDummyJoinRule.Config.DEFAULT.toRule());
+      if (!this.dialect.supportsGroupByLiteral()) {
+        hepProgramBuilder.addRuleInstance(
+            AggregateProjectConstantToDummyJoinRule.Config.DEFAULT.toRule());
+      }
+      if (!this.dialect.supportsJoinType(JoinRelType.FULL)) {
+        hepProgramBuilder.addRuleInstance(
+            FullToLeftAndRightJoinRule.Config.DEFAULT.toRule());
+      }
       HepPlanner hepPlanner = new HepPlanner(hepProgramBuilder.build());
 
       hepPlanner.setRoot(r);
@@ -651,6 +664,7 @@ public abstract class SqlImplementor {
      * @param rex Expression to convert
      */
     public SqlNode toSql(@Nullable RexProgram program, RexNode rex) {
+      rex = dialect.prepareUnparse(rex);
       final RexSubQuery subQuery;
       final SqlNode sqlSubQuery;
       final RexLiteral literal;
@@ -675,8 +689,12 @@ public abstract class SqlImplementor {
           final RexCorrelVariable variable = (RexCorrelVariable) referencedExpr;
           final Context correlAliasContext = getAliasContext(variable);
           final RexFieldAccess lastAccess = requireNonNull(accesses.pollLast());
-          sqlIdentifier = (SqlIdentifier) correlAliasContext
+          SqlNode node  = correlAliasContext
               .field(lastAccess.getField().getIndex());
+          if (node instanceof SqlDynamicParam) {
+            return node;
+          }
+          sqlIdentifier = (SqlIdentifier) node;
           break;
         case ROW:
         case ITEM:
@@ -763,20 +781,30 @@ public abstract class SqlImplementor {
 
       case DYNAMIC_PARAM:
         final RexDynamicParam caseParam = (RexDynamicParam) rex;
+        if (caseParam.getIndex() >= JdbcCorrelationDataContext.OFFSET) {
+          throw new AssertionError("More than "
+              + JdbcCorrelationDataContext.OFFSET
+              + " dynamic parameters used in query");
+        }
         return new SqlDynamicParam(caseParam.getIndex(), POS);
 
       case IN:
-        subQuery = (RexSubQuery) rex;
-        sqlSubQuery = implementor().visitRoot(subQuery.rel).asQueryOrValues();
-        final List<RexNode> operands = subQuery.operands;
-        SqlNode op0;
-        if (operands.size() == 1) {
-          op0 = toSql(program, operands.get(0));
-        } else {
-          final List<SqlNode> cols = toSql(program, operands);
-          op0 = new SqlNodeList(cols, POS);
+      case SOME:
+      case ALL:
+        if (rex instanceof RexSubQuery) {
+          subQuery = (RexSubQuery) rex;
+          sqlSubQuery = implementor().visitRoot(subQuery.rel).asQueryOrValues();
+          final List<RexNode> operands = subQuery.operands;
+          SqlNode op0;
+          if (operands.size() == 1) {
+            op0 = toSql(program, operands.get(0));
+          } else {
+            final List<SqlNode> cols = toSql(program, operands);
+            op0 = new SqlNodeList(cols, POS);
+          }
+          return subQuery.getOperator().createCall(POS, op0, sqlSubQuery);
         }
-        return subQuery.getOperator().createCall(POS, op0, sqlSubQuery);
+        return callToSql(program, (RexCall) rex, false);
 
       case SEARCH:
         final RexCall search = (RexCall) rex;
@@ -786,7 +814,7 @@ public abstract class SqlImplementor {
           //noinspection unchecked
           return toSql(program, search.operands.get(0), literal.getType(), sarg);
         }
-        return toSql(program, RexUtil.expandSearch(implementor().rexBuilder, program, search));
+        return toSql(program, RexUtil.expandSearch(RexBuilder.DEFAULT, program, search));
 
       case EXISTS:
       case UNIQUE:
@@ -941,7 +969,7 @@ public abstract class SqlImplementor {
         final RangeSets.Consumer<C> consumer =
             new RangeToSql<>(operandSql, orList, v ->
                 toSql(program,
-                    implementor().rexBuilder.makeLiteral(v, type)));
+                    RexBuilder.DEFAULT.makeLiteral(v, type)));
         RangeSets.forEach(sarg.rangeSet, consumer);
       }
       return SqlUtil.createCall(SqlStdOperatorTable.OR, POS, orList);
@@ -953,7 +981,7 @@ public abstract class SqlImplementor {
       final SqlNodeList list = rangeSet.asRanges().stream()
           .map(range ->
               toSql(program,
-                  implementor().rexBuilder.makeLiteral(range.lowerEndpoint(),
+                  RexBuilder.DEFAULT.makeLiteral(range.lowerEndpoint(),
                       type, true, true)))
           .collect(SqlNode.toList());
       switch (list.size()) {
@@ -1543,6 +1571,12 @@ public abstract class SqlImplementor {
     }
   }
 
+  protected Context getAliasContext(RexCorrelVariable variable) {
+    return requireNonNull(
+        correlTableMap.get(variable.id),
+        () -> "variable " + variable.id + " is not found");
+  }
+
   /** Simple implementation of {@link Context} that cannot handle sub-queries
    * or correlations. Because it is so simple, you do not need to create a
    * {@link SqlImplementor} or {@link org.apache.calcite.tools.RelBuilder}
@@ -1572,9 +1606,7 @@ public abstract class SqlImplementor {
     }
 
     @Override protected Context getAliasContext(RexCorrelVariable variable) {
-      return requireNonNull(
-          correlTableMap.get(variable.id),
-          () -> "variable " + variable.id + " is not found");
+      return SqlImplementor.this.getAliasContext(variable);
     }
 
     @Override public SqlImplementor implementor() {
@@ -1702,7 +1734,7 @@ public abstract class SqlImplementor {
             && ((RexInputRef) op0).getIndex() >= leftContext.fieldCount) {
           // Arguments were of form 'op1 = op0'
           final SqlOperator op2 = requireNonNull(call.getOperator().reverse());
-          return (RexCall) rexBuilder.makeCall(call.getParserPosition(), op2, op1, op0);
+          return (RexCall) RexBuilder.DEFAULT.makeCall(call.getParserPosition(), op2, op1, op0);
         }
         // fall through
       default:
@@ -1962,6 +1994,13 @@ public abstract class SqlImplementor {
       if (rel instanceof Project
           && clauses.contains(Clause.HAVING)
           && dialect.getConformance().isHavingAlias()) {
+        return true;
+      }
+
+      if (rel instanceof Aggregate
+          && (clauses.contains(Clause.ORDER_BY)
+          || clauses.contains(Clause.FETCH)
+          || clauses.contains(Clause.OFFSET))) {
         return true;
       }
 

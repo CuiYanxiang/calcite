@@ -275,9 +275,10 @@ public abstract class RelDataTypeFactoryImpl implements RelDataTypeFactory {
     if (type == null) {
       return null;
     }
-    return sqlTypeName == SqlTypeName.ARRAY
-        ? new ArraySqlType(type, isNullable)
-        : new MultisetSqlType(type, isNullable);
+    RelDataType collection = sqlTypeName == SqlTypeName.ARRAY
+        ? createArrayType(type, -1)
+        : createMultisetType(type, -1);
+    return createTypeWithNullability(collection, isNullable);
   }
 
   protected @Nullable RelDataType leastRestrictiveMapType(
@@ -302,7 +303,7 @@ public abstract class RelDataTypeFactoryImpl implements RelDataTypeFactory {
     if (valueType == null) {
       return null;
     }
-    return new MapSqlType(keyType, valueType, isNullable);
+    return createTypeWithNullability(createMapType(keyType, valueType), isNullable);
   }
 
   protected RelDataType leastRestrictiveIntervalDatetimeType(
@@ -404,6 +405,31 @@ public abstract class RelDataTypeFactoryImpl implements RelDataTypeFactory {
       // However, this might create regressions so we will not do it and we will keep previous
       // behavior.
       newType = copyRecordType((RelRecordType) type, !nullable,  nullable);
+    } else {
+      newType = copySimpleType(type, nullable);
+    }
+    return canonize(newType);
+  }
+
+  @Override public RelDataType enforceTypeWithNullability(
+      final RelDataType type,
+      final boolean nullable) {
+    requireNonNull(type, "type");
+    RelDataType newType;
+    if (type.isNullable() == nullable) {
+      newType = type;
+    } else if (type instanceof RelRecordType) {
+      return createStructType(type.getStructKind(),
+          new AbstractList<RelDataType>() {
+            @Override public RelDataType get(int index) {
+              return type.getFieldList().get(index).getType();
+            }
+
+            @Override public int size() {
+              return type.getFieldCount();
+            }
+          },
+          type.getFieldNames(), nullable);
     } else {
       newType = copySimpleType(type, nullable);
     }

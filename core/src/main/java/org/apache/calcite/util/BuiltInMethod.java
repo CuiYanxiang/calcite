@@ -52,6 +52,7 @@ import org.apache.calcite.linq4j.function.Predicate2;
 import org.apache.calcite.linq4j.tree.FunctionExpression;
 import org.apache.calcite.linq4j.tree.Primitive;
 import org.apache.calcite.linq4j.tree.Types;
+import org.apache.calcite.linq4j.tree.UnsignedType;
 import org.apache.calcite.plan.volcano.VolcanoPlanner;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.AllPredicates;
 import org.apache.calcite.rel.metadata.BuiltInMetadata.Collation;
@@ -101,6 +102,10 @@ import org.apache.calcite.runtime.SqlFunctions.FlatProductInputType;
 import org.apache.calcite.runtime.UrlFunctions;
 import org.apache.calcite.runtime.Utilities;
 import org.apache.calcite.runtime.XmlFunctions;
+import org.apache.calcite.runtime.rtti.RuntimeTypeInformation;
+import org.apache.calcite.runtime.variant.VariantNull;
+import org.apache.calcite.runtime.variant.VariantSqlValue;
+import org.apache.calcite.runtime.variant.VariantValue;
 import org.apache.calcite.schema.FilterableTable;
 import org.apache.calcite.schema.ModifiableTable;
 import org.apache.calcite.schema.ProjectableFilterableTable;
@@ -141,6 +146,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TimeZone;
+import java.util.UUID;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -328,6 +334,14 @@ public enum BuiltInMethod {
   INTEGER_CAST(Primitive.class, "integerCast", Primitive.class, Object.class),
   INTEGER_CAST_ROUNDING_MODE(Primitive.class, "integerCast",
       Primitive.class, Object.class, RoundingMode.class),
+  CAST_TO_UBYTE(UnsignedType.class, "toUByte",
+      Number.class, RoundingMode.class),
+  CAST_TO_USHORT(UnsignedType.class, "toUShort",
+      Number.class, RoundingMode.class),
+  CAST_TO_UINTEGER(UnsignedType.class, "toUInteger",
+      Number.class, RoundingMode.class),
+  CAST_TO_ULONG(UnsignedType.class, "toULong",
+      Number.class, RoundingMode.class),
   MEMORY_GET0(MemoryFactory.Memory.class, "get"),
   MEMORY_GET1(MemoryFactory.Memory.class, "get", int.class),
   ENUMERATOR_CURRENT(Enumerator.class, "current"),
@@ -370,6 +384,7 @@ public enum BuiltInMethod {
   LIST_CONTAINS(List.class, "contains", Object.class),
   LIST_GET(List.class, "get", int.class),
   LIST_TO_ARRAY(List.class, "toArray"),
+  LIST_TRANSFORM(SqlFunctions.class, "transform", List.class, Function1.class),
   ITERATOR_HAS_NEXT(Iterator.class, "hasNext"),
   ITERATOR_NEXT(Iterator.class, "next"),
   MATH_MAX(Math.class, "max", int.class, int.class),
@@ -397,6 +412,8 @@ public enum BuiltInMethod {
   LOWER(SqlFunctions.class, "lower", String.class),
   ARRAY_TO_STRING(SqlFunctions.class, "arrayToString", List.class,
       String.class),
+  STRING_TO_ARRAY(SqlFunctions.class, "stringToArray", String.class, String.class,
+      String.class),
   SROUND(SqlFunctions.class, "sround", long.class),
   STRUNCATE(SqlFunctions.class, "struncate", long.class),
   ASCII(SqlFunctions.class, "ascii", String.class),
@@ -407,6 +424,7 @@ public enum BuiltInMethod {
   TO_CODE_POINTS(SqlFunctions.class, "toCodePoints", String.class),
   CONVERT(SqlFunctions.class, "convertWithCharset", String.class, String.class,
       String.class),
+  CONVERT_ORACLE(SqlFunctions.class, "convertOracle", String.class, String[].class),
   EXP(SqlFunctions.class, "exp", double.class),
   MOD(SqlFunctions.class, "mod", long.class, long.class),
   POWER(SqlFunctions.class, "power", double.class, double.class),
@@ -429,9 +447,12 @@ public enum BuiltInMethod {
   FROM_BASE64(SqlFunctions.class, "fromBase64", String.class),
   TO_BASE32(SqlFunctions.class, "toBase32", String.class),
   FROM_BASE32(SqlFunctions.class, "fromBase32", String.class),
+  HEX(SqlFunctions.class, "hex", String.class),
   TO_HEX(SqlFunctions.class, "toHex", ByteString.class),
   FROM_HEX(SqlFunctions.class, "fromHex", String.class),
+  BIN(SqlFunctions.class, "bin", long.class),
   MD5(SqlFunctions.class, "md5", String.class),
+  CRC32(SqlFunctions.class, "crc32", String.class),
   SHA1(SqlFunctions.class, "sha1", String.class),
   SHA256(SqlFunctions.class, "sha256", String.class),
   SHA512(SqlFunctions.class, "sha512", String.class),
@@ -487,6 +508,10 @@ public enum BuiltInMethod {
   IS_JSON_ARRAY(JsonFunctions.class, "isJsonArray", String.class),
   IS_JSON_SCALAR(JsonFunctions.class, "isJsonScalar", String.class),
   ST_GEOM_FROM_EWKT(SpatialTypeFunctions.class, "ST_GeomFromEWKT", String.class),
+  UUID_FROM_STRING(UUID.class, "fromString", String.class),
+  UUID_TO_STRING(SqlFunctions.class, "uuidToString", UUID.class),
+  UUID_TO_BINARY(SqlFunctions.class, "uuidToBinary", UUID.class),
+  BINARY_TO_UUID(SqlFunctions.class, "binaryToUuid", ByteString.class),
   INITCAP(SqlFunctions.class, "initcap", String.class),
   SUBSTRING(SqlFunctions.class, "substring", String.class, int.class,
       int.class),
@@ -576,7 +601,7 @@ public enum BuiltInMethod {
   TRIM(SqlFunctions.class, "trim", boolean.class, boolean.class, String.class,
       String.class, boolean.class),
   REPLACE(SqlFunctions.class, "replace", String.class, String.class,
-      String.class),
+      String.class, boolean.class),
   TRANSLATE_WITH_CHARSET(SqlFunctions.class, "translateWithCharset", String.class, String.class),
   TRANSLATE3(SqlFunctions.class, "translate3", String.class, String.class, String.class),
   LTRIM(SqlFunctions.class, "ltrim", String.class),
@@ -853,6 +878,7 @@ public enum BuiltInMethod {
   ARRAY_INTERSECT(SqlFunctions.class, "arrayIntersect", List.class, List.class),
   ARRAY_UNION(SqlFunctions.class, "arrayUnion", List.class, List.class),
   ARRAY_REVERSE(SqlFunctions.class, "reverse", List.class),
+  ARRAY_SLICE(SqlFunctions.class, "arraySlice", List.class, int.class, int.class),
   ARRAYS_OVERLAP(SqlFunctions.class, "arraysOverlap", List.class, List.class),
   ARRAYS_ZIP(SqlFunctions.class, "arraysZip", List.class, List.class),
   EXISTS(SqlFunctions.class, "exists", List.class, Function1.class),
@@ -935,7 +961,13 @@ public enum BuiltInMethod {
       long.class),
   BIG_DECIMAL_ADD(BigDecimal.class, "add", BigDecimal.class),
   BIG_DECIMAL_NEGATE(BigDecimal.class, "negate"),
-  COMPARE_TO(Comparable.class, "compareTo", Object.class);
+  COMPARE_TO(Comparable.class, "compareTo", Object.class),
+  VARIANT_CREATE(VariantSqlValue.class, "create", RoundingMode.class,
+      Object.class, RuntimeTypeInformation.class),
+  VARIANT_CAST(VariantValue.class, "cast", RuntimeTypeInformation.class),
+  TYPEOF(VariantValue.class, "getTypeString", VariantValue.class),
+  VARIANT_ITEM(SqlFunctions.class, "item", VariantValue.class, Object.class),
+  VARIANTNULL(VariantNull.class, "getInstance");
 
   @SuppressWarnings("ImmutableEnumChecker")
   public final Method method;

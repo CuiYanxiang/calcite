@@ -160,6 +160,10 @@ public class CalciteAssert {
   public static final DatabaseInstance DB =
       DatabaseInstance.valueOf(CalciteSystemProperty.TEST_DB.value());
 
+  private static String testMysqlUrl = "jdbc:mysql://localhost/foodmart";
+
+  private static String testMysqlDriver = "com.mysql.jdbc.Driver";
+
   /** Implementation of {@link AssertThat} that does nothing. */
   private static final AssertThat DISABLED =
       new AssertThat(ConnectionFactories.empty(), ImmutableList.of()) {
@@ -569,6 +573,13 @@ public class CalciteAssert {
       try {
         if (updateChecker == null) {
           resultSet = statement.executeQuery(sql);
+          if (resultChecker == null && exceptionChecker != null) {
+            // Pull data from result set, otherwise exceptions that happen during evaluation
+            // won't be triggered
+            while (resultSet.next()) {
+              // no need to do anything with the data
+            }
+          }
         } else {
           updateCount = statement.executeUpdate(sql);
         }
@@ -1002,6 +1013,17 @@ public class CalciteAssert {
                 + " as t(SYMBOL, tstamp, price)",
             ImmutableList.of(), ImmutableList.of("POST", "TICKER"),
             null));
+      post.add("EMPS_DATE_TIME",
+          ViewTable.viewMacro(post,
+              "select * from (values\n"
+                  + "    (100, 'Fred',  10, CAST(NULL AS CHAR(1)), CAST(NULL AS VARCHAR(20)), 40,               25, TRUE,    FALSE, DATE '1996-08-03', TIME '16:22:34', TIMESTAMP '1996-08-03 16:22:34'),\n"
+                  + "    (110, 'Eric',  20, 'M',                   'San Francisco',           3,                80, UNKNOWN, FALSE, DATE '2001-01-01', TIME '12:20:00', TIMESTAMP '2001-01-01 12:20:00'),\n"
+                  + "    (110, 'John',  40, 'M',                   'Vancouver',               2, CAST(NULL AS INT), FALSE,   TRUE,  DATE '2002-05-03', TIME '13:12:14', TIMESTAMP '2002-05-03 13:12:14'),\n"
+                  + "    (120, 'Wilma', 20, 'F',                   CAST(NULL AS VARCHAR(20)), 1,                 5, UNKNOWN, TRUE,  DATE '2005-09-07', TIME '06:02:04', TIMESTAMP '2005-09-07 06:02:04'),\n"
+                  + "    (130, 'Alice', 40, 'F',                   'Vancouver',               2, CAST(NULL AS INT), FALSE,   TRUE,  DATE '2007-01-01', TIME '23:09:59', TIMESTAMP '2007-01-01 23:09:59'))\n"
+                  + " as t(empno, name, deptno, gender, city, empid, age, slacker, manager, joinedat, joinetime, joinetimestamp)",
+              emptyPath, ImmutableList.of("POST", "EMPS_DATE_TIME"),
+              null));
       return post;
     case FAKE_FOODMART:
       // Similar to FOODMART, but not based on JdbcSchema.
@@ -1010,7 +1032,7 @@ public class CalciteAssert {
       // FOODMART, and this allows statistics queries to be executed.
       foodmart = addSchemaIfNotExists(rootSchema, SchemaSpec.JDBC_FOODMART);
       final Wrapper salesTable =
-          requireNonNull((Wrapper) foodmart.getTable("sales_fact_1997"));
+          requireNonNull((Wrapper) foodmart.tables().get("sales_fact_1997"));
       SchemaPlus fake =
           rootSchema.add(schema.schemaName, new AbstractSchema());
       fake.add("time_by_day", new AbstractTable() {
@@ -1083,7 +1105,7 @@ public class CalciteAssert {
 
   private static SchemaPlus addSchemaIfNotExists(SchemaPlus rootSchema,
         SchemaSpec schemaSpec) {
-    final SchemaPlus schema = rootSchema.getSubSchema(schemaSpec.schemaName);
+    final SchemaPlus schema = rootSchema.subSchemas().get(schemaSpec.schemaName);
     if (schema != null) {
       return schema;
     }
@@ -2017,8 +2039,14 @@ public class CalciteAssert {
             + "/h2/target/foodmart;user=foodmart;password=foodmart",
             "foodmart", "foodmart", "org.h2.Driver", "foodmart"), null, null),
     MYSQL(
-        new ConnectionSpec("jdbc:mysql://localhost/foodmart", "foodmart",
-            "foodmart", "com.mysql.jdbc.Driver", "foodmart"), null, null),
+        new ConnectionSpec(testMysqlUrl, "foodmart",
+            "foodmart", testMysqlDriver, "foodmart"), null, null),
+    STARROCKS(
+        new ConnectionSpec(testMysqlUrl, "foodmart",
+            "foodmart", testMysqlDriver, "foodmart"), null, null),
+    DORIS(
+        new ConnectionSpec(testMysqlUrl, "foodmart",
+            "foodmart", testMysqlDriver, "foodmart"), null, null),
     ORACLE(
         new ConnectionSpec("jdbc:oracle:thin:@localhost:1521:XE", "foodmart",
             "foodmart", "oracle.jdbc.OracleDriver", "FOODMART"), null, null),
@@ -2281,11 +2309,11 @@ public class CalciteAssert {
       }
     };
 
-    @Override public Table getTable(String name) {
+    @Deprecated @Override public Table getTable(String name) {
       return table;
     }
 
-    @Override public Set<String> getTableNames() {
+    @Deprecated @Override public Set<String> getTableNames() {
       return ImmutableSet.of("myTable");
     }
 
@@ -2306,11 +2334,11 @@ public class CalciteAssert {
       return ImmutableSet.of();
     }
 
-    @Override public @Nullable Schema getSubSchema(String name) {
+    @Deprecated @Override public @Nullable Schema getSubSchema(String name) {
       return null;
     }
 
-    @Override public Set<String> getSubSchemaNames() {
+    @Deprecated @Override public Set<String> getSubSchemaNames() {
       return ImmutableSet.of();
     }
 

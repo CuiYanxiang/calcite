@@ -176,6 +176,136 @@ public class ReflectiveSchemaTest {
     assertThat(list, isListOf(100, 200, 150, 110));
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7014">[CALCITE-7014]
+   * Support EQUAL/GreaterThanOrEqual/LessThanOrEqual expressions to RexNode
+   * in CalcitePrepare</a>. */
+  @Test void testQueryProviderWithFilter() throws Exception {
+    Connection connection = CalciteAssert
+        .that(CalciteAssert.Config.REGULAR).connect();
+    QueryProvider queryProvider = connection.unwrap(QueryProvider.class);
+    ParameterExpression e = Expressions.parameter(Employee.class, "e");
+
+    // test where empid>150 and empid<=160, result size would be 0
+    List<Object[]> list =
+        queryProvider.createQuery(
+                Expressions.call(
+                    Expressions.call(
+                        Types.of(Enumerable.class, Employee.class),
+                        null,
+                        LINQ4J_AS_ENUMERABLE_METHOD,
+                        Expressions.constant(
+                            new HrSchema().emps)),
+                    "asQueryable"),
+                Employee.class)
+            .where(
+                Expressions.lambda(
+                    Expressions.lessThanOrEqual(
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.constant(160)),
+                    e))
+            .where(
+                Expressions.lambda(
+                    Expressions.greaterThan(
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.constant(150)),
+                    e))
+            .select(
+                Expressions.<Function1<Employee, Object[]>>lambda(
+                    Expressions.new_(
+                        Object[].class,
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.call(
+                            Expressions.field(
+                                e, "name"),
+                            "toUpperCase")),
+                    e))
+            .toList();
+    assertThat(list, hasSize(0));
+
+    // test where empid>=150 and empid<=160, result size would be 1
+    list =
+        queryProvider.createQuery(
+                Expressions.call(
+                    Expressions.call(
+                        Types.of(Enumerable.class, Employee.class),
+                        null,
+                        LINQ4J_AS_ENUMERABLE_METHOD,
+                        Expressions.constant(
+                            new HrSchema().emps)),
+                    "asQueryable"),
+                Employee.class)
+            .where(
+                Expressions.lambda(
+                    Expressions.lessThanOrEqual(
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.constant(160)),
+                    e))
+            .where(
+                Expressions.lambda(
+                    Expressions.greaterThanOrEqual(
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.constant(150)),
+                    e))
+            .select(
+                Expressions.<Function1<Employee, Object[]>>lambda(
+                    Expressions.new_(
+                        Object[].class,
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.call(
+                            Expressions.field(
+                                e, "name"),
+                            "toUpperCase")),
+                    e))
+            .toList();
+    assertThat(list, hasSize(1));
+    assertThat(list.get(0), arrayWithSize(2));
+    assertThat(list.get(0)[0], is(150));
+    assertThat(list.get(0)[1], is("SEBASTIAN"));
+
+    // test where empid=150, result size would be 1
+    list =
+        queryProvider.createQuery(
+                Expressions.call(
+                    Expressions.call(
+                        Types.of(Enumerable.class, Employee.class),
+                        null,
+                        LINQ4J_AS_ENUMERABLE_METHOD,
+                        Expressions.constant(
+                            new HrSchema().emps)),
+                    "asQueryable"),
+                Employee.class)
+            .where(
+                Expressions.lambda(
+                    Expressions.equal(
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.constant(150)),
+                    e))
+            .select(
+                Expressions.<Function1<Employee, Object[]>>lambda(
+                    Expressions.new_(
+                        Object[].class,
+                        Expressions.field(
+                            e, "empid"),
+                        Expressions.call(
+                            Expressions.field(
+                                e, "name"),
+                            "toUpperCase")),
+                    e))
+            .toList();
+    assertThat(list, hasSize(1));
+    assertThat(list.get(0), arrayWithSize(2));
+    assertThat(list.get(0)[0], is(150));
+    assertThat(list.get(0)[1], is("SEBASTIAN"));
+  }
+
   /**
    * Tests a relation that is accessed via method syntax.
    * The function returns a {@link org.apache.calcite.linq4j.Queryable}.
@@ -957,7 +1087,7 @@ public class ReflectiveSchemaTest {
    */
   @Test void testArrayFieldTableHasRowCount() {
     ReflectiveSchema schema = new ReflectiveSchema(new HrSchema());
-    Table table = schema.getTable("emps");
+    Table table = schema.tables().get("emps");
     assertNotNull(table);
     Statistic statistic = table.getStatistic();
     assertNotNull(statistic);
@@ -966,7 +1096,7 @@ public class ReflectiveSchemaTest {
 
   @Test void testCollectionFieldTableHasRowCount() {
     ReflectiveSchema schema = new ReflectiveSchema(new HrSchemaPlus());
-    Table table = schema.getTable("xlocations");
+    Table table = schema.tables().get("xlocations");
     assertNotNull(table);
     Statistic statistic = table.getStatistic();
     assertNotNull(statistic);

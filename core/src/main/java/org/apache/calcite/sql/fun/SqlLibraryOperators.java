@@ -102,10 +102,8 @@ public abstract class SqlLibraryOperators {
           OperandTypes.MEASURE);
 
   /** The "CONVERT_TIMEZONE(tz1, tz2, datetime)" function;
-   * converts the timezone of {@code datetime} from {@code tz1} to {@code tz2}.
-   * This function is only on Redshift, but we list it in PostgreSQL
-   * because Redshift does not have its own library. */
-  @LibraryOperator(libraries = {POSTGRESQL})
+   * converts the timezone of {@code datetime} from {@code tz1} to {@code tz2}. */
+  @LibraryOperator(libraries = {REDSHIFT})
   public static final SqlFunction CONVERT_TIMEZONE =
       SqlBasicFunction.create("CONVERT_TIMEZONE",
           ReturnTypes.DATE_NULLABLE, OperandTypes.CHARACTER_CHARACTER_DATETIME,
@@ -128,13 +126,13 @@ public abstract class SqlLibraryOperators {
 
   /** The "DATEADD(timeUnit, numeric, datetime)" function
    * (Microsoft SQL Server, Redshift, Snowflake). */
-  @LibraryOperator(libraries = {MSSQL, POSTGRESQL})
+  @LibraryOperator(libraries = {MSSQL, REDSHIFT, SNOWFLAKE})
   public static final SqlFunction DATEADD =
       new SqlTimestampAddFunction("DATEADD");
 
   /** The "DATE_ADD(date, numDays)" function
    * (Spark) Returns the date that is num_days after start_date. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction DATE_ADD_SPARK =
       SqlBasicFunction.create(SqlKind.DATE_ADD, ReturnTypes.DATE_NULLABLE,
               OperandTypes.DATE_ANY)
@@ -142,7 +140,7 @@ public abstract class SqlLibraryOperators {
 
   /** The "DATE_SUB(date, numDays)" function
    * (Spark) Returns the date that is num_days before start_date.*/
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction DATE_SUB_SPARK =
       SqlBasicFunction.create(SqlKind.DATE_SUB, ReturnTypes.DATE_NULLABLE,
               OperandTypes.DATE_ANY)
@@ -162,7 +160,7 @@ public abstract class SqlLibraryOperators {
    * <p>MySQL has "DATEDIFF(date, date2)" and "TIMEDIFF(time, time2)" functions
    * but Calcite does not implement these because they have no "timeUnit"
    * argument. */
-  @LibraryOperator(libraries = {MSSQL, POSTGRESQL})
+  @LibraryOperator(libraries = {MSSQL, REDSHIFT, SNOWFLAKE})
   public static final SqlFunction DATEDIFF =
       new SqlTimestampDiffFunction("DATEDIFF",
           OperandTypes.family(SqlTypeFamily.ANY, SqlTypeFamily.DATE,
@@ -261,7 +259,7 @@ public abstract class SqlLibraryOperators {
       };
 
   /** The "DECODE(v, v1, result1, [v2, result2, ...], resultN)" function. */
-  @LibraryOperator(libraries = {ORACLE, REDSHIFT, SPARK})
+  @LibraryOperator(libraries = {ORACLE, REDSHIFT, SPARK, HIVE})
   public static final SqlFunction DECODE =
       SqlBasicFunction.create(SqlKind.DECODE, DECODE_RETURN_TYPE,
           OperandTypes.VARIADIC);
@@ -327,7 +325,7 @@ public abstract class SqlLibraryOperators {
   }
 
   /** The "LPAD(original_value, return_length[, pattern])" function. */
-  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK})
+  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK, HIVE})
   public static final SqlFunction LPAD =
       SqlBasicFunction.create(
           "LPAD",
@@ -336,7 +334,7 @@ public abstract class SqlLibraryOperators {
           SqlFunctionCategory.STRING);
 
   /** The "RPAD(original_value, return_length[, pattern])" function. */
-  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK})
+  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK, HIVE})
   public static final SqlFunction RPAD =
       SqlBasicFunction.create(
           "RPAD",
@@ -345,7 +343,7 @@ public abstract class SqlLibraryOperators {
           SqlFunctionCategory.STRING);
 
   /** The "LTRIM(string)" function. */
-  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK})
+  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK, HIVE})
   public static final SqlFunction LTRIM =
       SqlBasicFunction.create(SqlKind.LTRIM,
           ReturnTypes.ARG0.andThen(SqlTypeTransforms.TO_NULLABLE)
@@ -354,7 +352,7 @@ public abstract class SqlLibraryOperators {
           .withFunctionType(SqlFunctionCategory.STRING);
 
   /** The "RTRIM(string)" function. */
-  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK})
+  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, POSTGRESQL, SPARK, HIVE})
   public static final SqlFunction RTRIM =
       SqlBasicFunction.create(SqlKind.RTRIM,
           ReturnTypes.ARG0.andThen(SqlTypeTransforms.TO_NULLABLE)
@@ -410,6 +408,13 @@ public abstract class SqlLibraryOperators {
           OperandTypes.STRING_INTEGER_OPTIONAL_INTEGER,
           SqlFunctionCategory.STRING);
 
+  /** The "STRING_TO_ARRAY(string, delimiter [, null_string ])" function (PostgreSQL). */
+  @LibraryOperator(libraries = {POSTGRESQL})
+  public static final SqlFunction STRING_TO_ARRAY =
+      SqlBasicFunction.create(SqlKind.STRING_TO_ARRAY,
+          ReturnTypes.TO_ARRAY_NULLABLE,
+          OperandTypes.STRING_STRING_OPTIONAL_STRING);
+
   /** The "ENDS_WITH(value1, value2)" function (BigQuery). */
   @LibraryOperator(libraries = {BIG_QUERY})
   public static final SqlBasicFunction ENDS_WITH =
@@ -458,6 +463,10 @@ public abstract class SqlLibraryOperators {
   public static final SqlFunction SUBSTR_ORACLE =
       SUBSTR.withKind(SqlKind.SUBSTR_ORACLE);
 
+  @LibraryOperator(libraries = {ORACLE})
+  public static final SqlFunction CONVERT_ORACLE =
+      new SqlOracleConvertFunction("CONVERT");
+
   /** PostgreSQL's "SUBSTR(string, position [, substringLength ])" function. */
   @LibraryOperator(libraries = {POSTGRESQL})
   public static final SqlFunction SUBSTR_POSTGRESQL =
@@ -480,28 +489,30 @@ public abstract class SqlLibraryOperators {
           SqlFunctionCategory.STRING);
 
   /** The "GREATEST(value, value)" function. */
-  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, SPARK})
+  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, HIVE})
   public static final SqlFunction GREATEST =
       SqlBasicFunction.create(SqlKind.GREATEST,
           ReturnTypes.LEAST_RESTRICTIVE.andThen(SqlTypeTransforms.TO_NULLABLE),
           OperandTypes.SAME_VARIADIC);
 
-  /** The "GREATEST(value, value)" function. */
-  @LibraryOperator(libraries = {POSTGRESQL})
+  /** The "GREATEST(value, value)" function. Identical to the standard <code>GREATEST</code>
+   * function except it skips null values and only returns null if all parameters are nulls. */
+  @LibraryOperator(libraries = {POSTGRESQL, SPARK})
   public static final SqlFunction GREATEST_PG =
       SqlBasicFunction.create("GREATEST", SqlKind.GREATEST_PG,
           ReturnTypes.LEAST_RESTRICTIVE.andThen(SqlTypeTransforms.TO_NULLABLE),
           OperandTypes.SAME_VARIADIC);
 
   /** The "LEAST(value, value)" function. */
-  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, SPARK})
+  @LibraryOperator(libraries = {BIG_QUERY, ORACLE, HIVE})
   public static final SqlFunction LEAST =
       SqlBasicFunction.create(SqlKind.LEAST,
           ReturnTypes.LEAST_RESTRICTIVE.andThen(SqlTypeTransforms.TO_NULLABLE),
           OperandTypes.SAME_VARIADIC);
 
-  /** The "GREATEST(value, value)" function. */
-  @LibraryOperator(libraries = {POSTGRESQL})
+  /** The "LEAST(value, value)" function. Identical to the standard <code>LEAST</code>
+   * function except it skips null values and only returns null if all parameters are nulls. */
+  @LibraryOperator(libraries = {POSTGRESQL, SPARK})
   public static final SqlFunction LEAST_PG =
       SqlBasicFunction.create("LEAST", SqlKind.LEAST_PG,
           ReturnTypes.LEAST_RESTRICTIVE.andThen(SqlTypeTransforms.TO_NULLABLE),
@@ -607,7 +618,7 @@ public abstract class SqlLibraryOperators {
   /** The "REGEXP_REPLACE(value, regexp, rep)"
    * function. Replaces all substrings of value that match regexp with
    * {@code rep} and returns modified value. */
-  @LibraryOperator(libraries = {MYSQL, ORACLE, REDSHIFT})
+  @LibraryOperator(libraries = {MYSQL, ORACLE, REDSHIFT, HIVE})
   public static final SqlFunction REGEXP_REPLACE_3 =
       SqlBasicFunction.create("REGEXP_REPLACE", ReturnTypes.VARCHAR_NULLABLE,
           OperandTypes.STRING_STRING_STRING, SqlFunctionCategory.STRING);
@@ -1087,7 +1098,7 @@ public abstract class SqlLibraryOperators {
           ReturnTypes.ARG0_NULLABLE_VARYING,
           OperandTypes.CBSTRING_INTEGER, SqlFunctionCategory.STRING);
 
-  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, SPARK})
+  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, SPARK, HIVE})
   public static final SqlFunction REPEAT =
       SqlBasicFunction.create("REPEAT",
           ReturnTypes.VARCHAR_NULLABLE,
@@ -1099,7 +1110,7 @@ public abstract class SqlLibraryOperators {
       SqlBasicFunction.create("RIGHT", ReturnTypes.ARG0_NULLABLE_VARYING,
           OperandTypes.CBSTRING_INTEGER, SqlFunctionCategory.STRING);
 
-  @LibraryOperator(libraries = {MYSQL, SPARK})
+  @LibraryOperator(libraries = {MYSQL, SPARK, HIVE})
   public static final SqlFunction SPACE =
       SqlBasicFunction.create("SPACE",
           ReturnTypes.VARCHAR_NULLABLE,
@@ -1113,7 +1124,7 @@ public abstract class SqlLibraryOperators {
           OperandTypes.STRING_STRING,
           SqlFunctionCategory.STRING);
 
-  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, ORACLE})
+  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, ORACLE, HIVE})
   public static final SqlFunction SOUNDEX =
       SqlBasicFunction.create("SOUNDEX",
           ReturnTypes.VARCHAR_4_NULLABLE,
@@ -1165,7 +1176,14 @@ public abstract class SqlLibraryOperators {
           SqlKind.OTHER_FUNCTION,
           ReturnTypes.BIGINT_NULLABLE,
           null,
-          OperandTypes.NUMERIC.or(OperandTypes.BINARY),
+          OperandTypes.or(OperandTypes.NUMERIC,
+              OperandTypes.BINARY,
+              OperandTypes.BOOLEAN,
+              OperandTypes.CHARACTER,
+              OperandTypes.DATETIME,
+              OperandTypes.DATE,
+              OperandTypes.TIME,
+              OperandTypes.TIMESTAMP),
           SqlFunctionCategory.NUMERIC);
 
   /** The "CONCAT(arg, ...)" function that concatenates strings.
@@ -1370,7 +1388,7 @@ public abstract class SqlLibraryOperators {
 
   /** The "ARRAY(exp, ...)" function (Spark);
    * compare with the standard array value constructor, "ARRAY [exp, ...]". */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY =
       SqlBasicFunction.create("ARRAY",
           SqlLibraryOperators::arrayReturnType,
@@ -1504,14 +1522,14 @@ public abstract class SqlLibraryOperators {
           OperandTypes.ARRAY_ELEMENT_NONNULL);
 
   /** The "ARRAY_DISTINCT(array)" function. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_DISTINCT =
       SqlBasicFunction.create(SqlKind.ARRAY_DISTINCT,
           ReturnTypes.ARG0_NULLABLE,
           OperandTypes.ARRAY);
 
   /** The "ARRAY_EXCEPT(array1, array2)" function. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_EXCEPT =
       SqlBasicFunction.create(SqlKind.ARRAY_EXCEPT,
           ReturnTypes.LEAST_RESTRICTIVE,
@@ -1542,7 +1560,7 @@ public abstract class SqlLibraryOperators {
     type = opBinding.getTypeFactory().createTypeWithNullability(type, true);
     // make explicit CAST for array elements and inserted element to the biggest type
     // if array component type not equals to inserted element type
-    if (!componentType.equalsSansFieldNames(elementType2)) {
+    if (!componentType.equalsSansFieldNamesAndNullability(elementType2)) {
       // For array_insert, 0 is the array arg and 2 is the inserted element
       SqlValidatorUtil.
           adjustTypeForArrayFunctions(type, opBinding, 2);
@@ -1561,7 +1579,7 @@ public abstract class SqlLibraryOperators {
           OperandTypes.ARRAY_INSERT);
 
   /** The "ARRAY_INTERSECT(array1, array2)" function. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_INTERSECT =
       SqlBasicFunction.create(SqlKind.ARRAY_INTERSECT,
           ReturnTypes.LEAST_RESTRICTIVE,
@@ -1571,7 +1589,7 @@ public abstract class SqlLibraryOperators {
               OperandTypes.family(SqlTypeFamily.ARRAY, SqlTypeFamily.ARRAY)));
 
   /** The "ARRAY_JOIN(array, delimiter [, nullText ])" function. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_JOIN =
       SqlBasicFunction.create(SqlKind.ARRAY_JOIN,
           ReturnTypes.VARCHAR_NULLABLE,
@@ -1585,14 +1603,14 @@ public abstract class SqlLibraryOperators {
           OperandTypes.ARRAY);
 
   /** The "ARRAY_MAX(array)" function. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_MAX =
       SqlBasicFunction.create(SqlKind.ARRAY_MAX,
           ReturnTypes.TO_COLLECTION_ELEMENT_FORCE_NULLABLE,
           OperandTypes.ARRAY_NONNULL);
 
-  /** The "ARRAY_MAX(array)" function. */
-  @LibraryOperator(libraries = {SPARK})
+  /** The "ARRAY_MIN(array)" function. */
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_MIN =
       SqlBasicFunction.create(SqlKind.ARRAY_MIN,
           ReturnTypes.TO_COLLECTION_ELEMENT_FORCE_NULLABLE,
@@ -1613,7 +1631,7 @@ public abstract class SqlLibraryOperators {
           OperandTypes.ARRAY_ELEMENT_NONNULL);
 
   /** The "ARRAY_REMOVE(array, element)" function. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_REMOVE =
       SqlBasicFunction.create(SqlKind.ARRAY_REMOVE,
           ReturnTypes.ARG0_NULLABLE,
@@ -1642,8 +1660,17 @@ public abstract class SqlLibraryOperators {
           ReturnTypes.INTEGER_NULLABLE,
           OperandTypes.ARRAY);
 
+  /** The "ARRAY_SLICE(array, start, length)" function. */
+  @LibraryOperator(libraries = {HIVE})
+  public static final SqlFunction ARRAY_SLICE =
+      SqlBasicFunction.create(SqlKind.ARRAY_SLICE,
+          ReturnTypes.ARG0_NULLABLE,
+          OperandTypes.sequence(
+              "ARRAY_SLICE(ARRAY, INTEGER, INTEGER)",
+              OperandTypes.ARRAY, OperandTypes.INTEGER, OperandTypes.INTEGER));
+
   /** The "ARRAY_UNION(array1, array2)" function. */
-  @LibraryOperator(libraries = {SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
   public static final SqlFunction ARRAY_UNION =
       SqlBasicFunction.create(SqlKind.ARRAY_UNION,
           ReturnTypes.LEAST_RESTRICTIVE,
@@ -1844,6 +1871,19 @@ public abstract class SqlLibraryOperators {
           OperandTypes.STRING.or(OperandTypes.BINARY),
           SqlFunctionCategory.STRING);
 
+  @LibraryOperator(libraries = {HIVE})
+  public static final SqlFunction BASE64 =
+      SqlBasicFunction.create("BASE64",
+          ReturnTypes.VARCHAR_NULLABLE,
+          OperandTypes.STRING.or(OperandTypes.BINARY),
+          SqlFunctionCategory.STRING);
+
+  @LibraryOperator(libraries = {HIVE})
+  public static final SqlFunction UN_BASE64 =
+      SqlBasicFunction.create("UNBASE64",
+          ReturnTypes.VARBINARY_FORCE_NULLABLE,
+          OperandTypes.STRING, SqlFunctionCategory.STRING);
+
   @LibraryOperator(libraries = {BIG_QUERY})
   public static final SqlFunction FROM_BASE32 =
       SqlBasicFunction.create("FROM_BASE32",
@@ -1877,6 +1917,16 @@ public abstract class SqlLibraryOperators {
           OperandTypes.BINARY,
           SqlFunctionCategory.STRING);
 
+  /**
+   * The "HEX(string)" function; converts {@code string} into a hexadecimal varchar.
+   */
+  @LibraryOperator(libraries = {HIVE, SPARK})
+  public static final SqlFunction HEX =
+      SqlBasicFunction.create("HEX",
+          ReturnTypes.VARCHAR_NULLABLE,
+          OperandTypes.CHARACTER,
+          SqlFunctionCategory.STRING);
+
   /** The "FORMAT_NUMBER(value, decimalOrFormat)" function. */
   @LibraryOperator(libraries = {HIVE, SPARK})
   public static final SqlFunction FORMAT_NUMBER =
@@ -1908,7 +1958,7 @@ public abstract class SqlLibraryOperators {
 
   /** The "TO_DATE(string1, string2)" function; casts string1
    * to a DATE using the format specified in string2. */
-  @LibraryOperator(libraries = {ORACLE, REDSHIFT})
+  @LibraryOperator(libraries = {ORACLE, REDSHIFT, HIVE})
   public static final SqlFunction TO_DATE =
       SqlBasicFunction.create("TO_DATE",
           ReturnTypes.DATE_NULLABLE,
@@ -2470,14 +2520,28 @@ public abstract class SqlLibraryOperators {
           OperandTypes.INTEGER,
           SqlFunctionCategory.NUMERIC);
 
-  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
+  public static final SqlFunction BIN =
+      SqlBasicFunction.create("BIN",
+          ReturnTypes.VARCHAR_NULLABLE,
+          OperandTypes.NUMERIC,
+          SqlFunctionCategory.STRING);
+
+  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, SPARK, HIVE})
   public static final SqlFunction MD5 =
       SqlBasicFunction.create("MD5",
           ReturnTypes.VARCHAR_NULLABLE,
           OperandTypes.STRING.or(OperandTypes.BINARY),
           SqlFunctionCategory.STRING);
 
-  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, SPARK})
+  @LibraryOperator(libraries = {SPARK, HIVE})
+  public static final SqlFunction CRC32 =
+      SqlBasicFunction.create("CRC32",
+          ReturnTypes.BIGINT_NULLABLE,
+          OperandTypes.STRING.or(OperandTypes.BINARY),
+          SqlFunctionCategory.STRING);
+
+  @LibraryOperator(libraries = {BIG_QUERY, MYSQL, POSTGRESQL, SPARK, HIVE})
   public static final SqlFunction SHA1 =
       SqlBasicFunction.create("SHA1",
           ReturnTypes.VARCHAR_NULLABLE,
@@ -2528,7 +2592,7 @@ public abstract class SqlLibraryOperators {
 
   /** The "LOG(numeric1 [, numeric2 ]) " function. Returns the logarithm of numeric2
    * to base numeric1.*/
-  @LibraryOperator(libraries = {MYSQL, SPARK})
+  @LibraryOperator(libraries = {MYSQL, SPARK, HIVE})
   public static final SqlFunction LOG_MYSQL =
       SqlBasicFunction.create(SqlKind.LOG,
           ReturnTypes.DOUBLE_FORCE_NULLABLE,

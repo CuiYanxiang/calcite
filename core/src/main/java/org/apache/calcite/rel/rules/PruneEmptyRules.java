@@ -38,6 +38,7 @@ import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.core.Union;
 import org.apache.calcite.rel.core.Values;
 import org.apache.calcite.rel.logical.LogicalValues;
+import org.apache.calcite.rel.metadata.RelMdUtil;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexDynamicParam;
 import org.apache.calcite.rex.RexLiteral;
@@ -405,6 +406,9 @@ public abstract class PruneEmptyRules {
               + RelOptUtil.toString(union);
           if (nonEmptyInputs == 0) {
             relBuilder.push(union).empty();
+          } else if (nonEmptyInputs == 1 && !union.all) {
+            relBuilder.distinct();
+            relBuilder.convert(union.getRowType(), true);
           } else {
             relBuilder.union(union.all, nonEmptyInputs);
             relBuilder.convert(union.getRowType(), true);
@@ -446,6 +450,9 @@ public abstract class PruneEmptyRules {
               + RelOptUtil.toString(minus);
           if (nonEmptyInputs == 0) {
             relBuilder.push(minus).empty();
+          } else if (nonEmptyInputs == 1 && !minus.all) {
+            relBuilder.distinct();
+            relBuilder.convert(minus.getRowType(), true);
           } else {
             relBuilder.minus(minus.all, nonEmptyInputs);
             relBuilder.convert(minus.getRowType(), true);
@@ -645,8 +652,7 @@ public abstract class PruneEmptyRules {
       return new RemoveEmptySingleRule(this) {
         @Override public boolean matches(RelOptRuleCall call) {
           RelNode node = call.rel(0);
-          Double maxRowCount = call.getMetadataQuery().getMaxRowCount(node);
-          return maxRowCount != null && maxRowCount == 0.0;
+          return RelMdUtil.isRelDefinitelyEmpty(call.getMetadataQuery(), node);
         }
       };
     }

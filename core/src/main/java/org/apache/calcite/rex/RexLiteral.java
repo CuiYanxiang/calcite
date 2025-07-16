@@ -26,6 +26,7 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.runtime.FlatLists;
 import org.apache.calcite.runtime.SpatialTypeFunctions;
+import org.apache.calcite.runtime.variant.VariantValue;
 import org.apache.calcite.sql.SqlCollation;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlOperator;
@@ -65,6 +66,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TimeZone;
+import java.util.UUID;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -315,6 +317,10 @@ public class RexLiteral extends RexNode {
       return true;
     }
     switch (typeName) {
+    case UUID:
+      return value instanceof UUID;
+    case VARIANT:
+      return value instanceof VariantValue;
     case BOOLEAN:
       // Unlike SqlLiteral, we do not allow boolean null.
       return value instanceof Boolean;
@@ -386,6 +392,7 @@ public class RexLiteral extends RexNode {
     case SYMBOL:
       return value instanceof Enum;
     case ROW:
+    case ARRAY:
     case MULTISET:
       return value instanceof List;
     case GEOMETRY:
@@ -692,6 +699,10 @@ public class RexLiteral extends RexNode {
       Util.asStringBuilder(sb, sb2 ->
           printSarg(sb2, (Sarg) value, type));
       break;
+    case UUID:
+      assert value instanceof UUID;
+      sb.append(value);
+      break;
     case SYMBOL:
       assert value instanceof Enum;
       sb.append("FLAG(");
@@ -738,6 +749,7 @@ public class RexLiteral extends RexNode {
       break;
     case MULTISET:
     case ROW:
+    case ARRAY:
       assert value instanceof List : "value must implement List: " + value;
       @SuppressWarnings("unchecked") final List<RexLiteral> list =
           (List<RexLiteral>) castNonNull(value);
@@ -778,6 +790,7 @@ public class RexLiteral extends RexNode {
       return new RexLiteral((Comparable) fieldLiterals, type, typeName);
 
     case MULTISET:
+    case ARRAY:
       assert value instanceof List : "value must implement List: " + value;
       final List<Comparable<?>> elementValues = (List) value;
       final List<RexLiteral> elementLiterals =
@@ -1057,6 +1070,11 @@ public class RexLiteral extends RexNode {
       return clazz.cast(value);
     }
     switch (typeName) {
+    case UUID:
+      if (clazz == String.class) {
+        return clazz.cast(((UUID) value).toString());
+      }
+      break;
     case BINARY:
       if (clazz == byte[].class) {
         return clazz.cast(((ByteString) value).getBytes());
