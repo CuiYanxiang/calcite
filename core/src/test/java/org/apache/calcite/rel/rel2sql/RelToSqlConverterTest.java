@@ -2849,7 +2849,10 @@ class RelToSqlConverterTest {
   /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-6150">[CALCITE-6150]
    * JDBC adapter for ClickHouse generates incorrect SQL for certain units in
-   * the EXTRACT function</a>. Also tests other units in other dialects. */
+   * the EXTRACT function</a>. Also tests other units in other dialects,
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7096">[CALCITE-7096]
+   * Invalid unparse for EXTRACT in StarRocks/Doris</a>.
+   * */
   @Test void testExtract() {
     final String sql = "SELECT\n"
         + "EXTRACT(YEAR FROM DATE '2023-12-01'),\n"
@@ -2885,16 +2888,16 @@ class RelToSqlConverterTest {
         + "EXTRACT(MINUTE FROM TIMESTAMP '2023-12-01 00:00:00'), "
         + "EXTRACT(SECOND FROM TIMESTAMP '2023-12-01 00:00:00')";
     final String expectedStarRocks = "SELECT "
-        + "EXTRACT(YEAR FROM DATE '2023-12-01'), "
-        + "EXTRACT(QUARTER FROM DATE '2023-12-01'), "
-        + "EXTRACT(MONTH FROM DATE '2023-12-01'), "
-        + "EXTRACT(WEEK FROM DATE '2023-12-01'), "
-        + "DAYOFYEAR(DATE '2023-12-01'), "
-        + "EXTRACT(DAY FROM DATE '2023-12-01'), "
-        + "DAYOFWEEK(DATE '2023-12-01'), "
-        + "EXTRACT(HOUR FROM DATETIME '2023-12-01 00:00:00'), "
-        + "EXTRACT(MINUTE FROM DATETIME '2023-12-01 00:00:00'), "
-        + "EXTRACT(SECOND FROM DATETIME '2023-12-01 00:00:00')";
+        + "EXTRACT(YEAR FROM '2023-12-01'), "
+        + "EXTRACT(QUARTER FROM '2023-12-01'), "
+        + "EXTRACT(MONTH FROM '2023-12-01'), "
+        + "EXTRACT(WEEK FROM '2023-12-01'), "
+        + "EXTRACT(DAYOFYEAR FROM '2023-12-01'), "
+        + "EXTRACT(DAY FROM '2023-12-01'), "
+        + "EXTRACT(DAYOFWEEK FROM '2023-12-01'), "
+        + "EXTRACT(HOUR FROM '2023-12-01 00:00:00'), "
+        + "EXTRACT(MINUTE FROM '2023-12-01 00:00:00'), "
+        + "EXTRACT(SECOND FROM '2023-12-01 00:00:00')";
     final String expectedHive = "SELECT "
         + "EXTRACT(YEAR FROM DATE '2023-12-01'), "
         + "EXTRACT(QUARTER FROM DATE '2023-12-01'), "
@@ -2935,9 +2938,9 @@ class RelToSqlConverterTest {
             + "EXTRACT(QUARTER FROM '2023-12-01'), "
             + "EXTRACT(MONTH FROM '2023-12-01'), "
             + "EXTRACT(WEEK FROM '2023-12-01'), "
-            + "EXTRACT(DOY FROM '2023-12-01'), "
+            + "EXTRACT(DAYOFYEAR FROM '2023-12-01'), "
             + "EXTRACT(DAY FROM '2023-12-01'), "
-            + "EXTRACT(DOW FROM '2023-12-01'), "
+            + "EXTRACT(DAYOFWEEK FROM '2023-12-01'), "
             + "EXTRACT(HOUR FROM '2023-12-01 00:00:00'), "
             + "EXTRACT(MINUTE FROM '2023-12-01 00:00:00'), "
             + "EXTRACT(SECOND FROM '2023-12-01 00:00:00')";
@@ -10426,6 +10429,27 @@ class RelToSqlConverterTest {
         .schema(CalciteAssert.SchemaSpec.JDBC_SCOTT)
         .withCalcite()
         .optimize(rules, hepPlanner)
+        .ok(expected);
+  }
+
+  @Test void testAggregateFilterToCase() {
+    final String query = "select\n"
+        + " sum(sal) filter(where deptno = 10) as sum_match,\n"
+        + " count(distinct deptno) filter(where job = 'CLERK') as count_distinct_match,\n"
+        + " count(*) filter(where deptno = 40) as count_star_match\n"
+        + " from emp";
+    final String expected = "SELECT"
+        + " SUM(CASE WHEN CAST(\"DEPTNO\" AS INTEGER) = 10 THEN \"SAL\" ELSE NULL END)"
+        + " AS \"SUM_MATCH\","
+        + " COUNT(DISTINCT CASE WHEN \"JOB\" = 'CLERK' THEN \"DEPTNO\" ELSE NULL END)"
+        + " AS \"COUNT_DISTINCT_MATCH\","
+        + " COUNT(CASE WHEN CAST(\"DEPTNO\" AS INTEGER) = 40 THEN 0 ELSE NULL END)"
+        + " AS \"COUNT_STAR_MATCH\"\nFROM \"SCOTT\".\"EMP\"";
+
+    sql(query)
+        .schema(CalciteAssert.SchemaSpec.JDBC_SCOTT)
+        .withCalcite()
+        .optimize(RuleSets.ofList(CoreRules.AGGREGATE_FILTER_TO_CASE), null)
         .ok(expected);
   }
 
