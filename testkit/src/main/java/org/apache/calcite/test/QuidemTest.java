@@ -23,10 +23,8 @@ import org.apache.calcite.jdbc.CalciteConnection;
 import org.apache.calcite.plan.Contexts;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptRule;
-import org.apache.calcite.plan.RelRule.Config;
 import org.apache.calcite.prepare.Prepare;
 import org.apache.calcite.rel.rules.CoreRules;
-import org.apache.calcite.rel.rules.RuleConfig;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.runtime.Hook;
@@ -67,7 +65,6 @@ import java.io.Writer;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.net.URL;
 import java.sql.Connection;
@@ -252,7 +249,7 @@ public abstract class QuidemTest {
             // - Reset defaults: "original"
             if (propertyName.equals("planner-rules")) {
               if (value.equals("original")) {
-                closer.add(Hook.PLANNER.addThread(this::resetPlanner));
+                closer.add(Hook.PLANNER.addThread(QuidemTest::resetPlanner));
               } else {
                 closer.add(
                     Hook.PLANNER.addThread((Consumer<RelOptPlanner>)
@@ -275,12 +272,12 @@ public abstract class QuidemTest {
     }
     final String diff = DiffTestCase.diff(inFile, outFile);
     if (!diff.isEmpty()) {
-      fail("Files differ: " + outFile + " " + inFile + "\n"
+      fail("Files differ:\ndiff " + inFile + " " + outFile + "\n"
           + diff);
     }
   }
 
-  private void updatePlanner(RelOptPlanner planner, String value) {
+  private static void updatePlanner(RelOptPlanner planner, String value) {
     List<RelOptRule> rulesAdd = new ArrayList<>();
     List<RelOptRule> rulesRemove = new ArrayList<>();
     parseRules(value, rulesAdd, rulesRemove);
@@ -288,14 +285,15 @@ public abstract class QuidemTest {
     rulesAdd.forEach(planner::addRule);
   }
 
-  private void resetPlanner(RelOptPlanner planner) {
+  private static void resetPlanner(RelOptPlanner planner) {
     if (originalRules != null) {
       planner.getRules().forEach(planner::removeRule);
       originalRules.forEach(planner::addRule);
     }
   }
 
-  private void parseRules(String value, List<RelOptRule> rulesAdd, List<RelOptRule> rulesRemove) {
+  private static void parseRules(String value, List<RelOptRule> rulesAdd,
+      List<RelOptRule> rulesRemove) {
     Pattern pattern = Pattern.compile("([+-])((CoreRules|EnumerableRules)\\.)?(\\w+)");
     Matcher matcher = pattern.matcher(value);
 
@@ -320,55 +318,20 @@ public abstract class QuidemTest {
   }
 
   public static RelOptRule getCoreRule(String ruleName) {
-    RelOptRule rule = null;
     try {
-      // Get rule class and config annotation
       Field ruleField = CoreRules.class.getField(ruleName);
-      Class<?> ruleClass = ruleField.getType();
+      Object o = ruleField.get(null);
 
-      // Find Config inner class
-      Class<?> configClass = null;
-      for (Class<?> innerClass : ruleClass.getDeclaredClasses()) {
-        if (innerClass.getSimpleName().endsWith("Config")) {
-          configClass = innerClass;
-          break;
-        }
+      if (o instanceof RelOptRule) {
+        return (RelOptRule) o;
       }
-      if (configClass == null) {
-        // Should not enter
-        throw new RuntimeException("Config not found in " + ruleClass.getName());
-      }
-
-      // Determine config field name
-      RuleConfig ruleConfig = ruleField.getAnnotation(RuleConfig.class);
-      String configValue = (ruleConfig == null || ruleConfig.value().isEmpty())
-          ? "DEFAULT"
-          : ruleConfig.value();
-
-      // Find and process the target config field
-      for (Field field : configClass.getDeclaredFields()) {
-        if (field.getType() == configClass
-            && Modifier.isStatic(field.getModifiers())
-            && field.getName().equals(configValue)) {
-          field.setAccessible(true);
-          Config config = (Config) field.get(null);
-          rule = config.toRule();
-          break;
-        }
-      }
-
-      if (rule == null) {
-        throw new RuntimeException("No matching config value '" + configValue
-            + "' found in " + configClass.getName());
-      }
-    } catch (NoSuchFieldException | IllegalAccessException
-         | RuntimeException e) {
+      throw new IllegalArgumentException(ruleName + " is not of type RelOptRule");
+    } catch (NoSuchFieldException | IllegalAccessException e) {
       throw new RuntimeException("Failed to get rule '" + ruleName + "': " + e.getMessage());
     }
-    return rule;
   }
 
-  private void setRules(char operation, RelOptRule rule,
+  private static void setRules(char operation, RelOptRule rule,
       List<RelOptRule> rulesAdd, List<RelOptRule> rulesRemove) {
     if (operation == '+') {
       rulesAdd.add(rule);

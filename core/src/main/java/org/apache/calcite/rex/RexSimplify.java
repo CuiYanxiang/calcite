@@ -65,6 +65,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.apache.calcite.linq4j.Nullness.castNonNull;
 import static org.apache.calcite.rex.RexUnknownAs.FALSE;
@@ -500,15 +502,125 @@ public class RexSimplify {
   private RexNode simplifyLike(RexCall e, RexUnknownAs unknownAs) {
     if (e.operands.get(1) instanceof RexLiteral) {
       final RexLiteral literal = (RexLiteral) e.operands.get(1);
-      if ("%".equals(literal.getValueAs(String.class))) {
-        // "x LIKE '%'" simplifies to "x = x"
+      String likeStr = requireNonNull(literal.getValueAs(String.class));
+      Pattern pattern = Pattern.compile("%+");
+      String value = pattern.matcher(likeStr).replaceAll("%");
+      if ("%".equals(value)) {
+        // "x LIKE '%'" or "x LIKE '%...'" simplifies to "x = x"
         final RexNode x = e.operands.get(0);
         return simplify(
             rexBuilder.makeCall(
                 e.getParserPosition(), SqlStdOperatorTable.EQUALS, x, x), unknownAs);
       }
+      // simplify "x LIKE '%%\%%a%%%'" to "x LIKE '%\%%a%'", default escape is '\'
+      if (e.operands.size() == 2) {
+        e = (RexCall) rexBuilder
+            .makeCall(e.getParserPosition(), e.getOperator(), e.operands.get(0),
+                rexBuilder.makeLiteral(simplifyLikeString(likeStr, '\\', '%')));
+      }
+      if (e.operands.size() == 3 && e.operands.get(2) instanceof RexLiteral) {
+        final RexLiteral escapeLiteral = (RexLiteral) e.operands.get(2);
+        Character escape = requireNonNull(escapeLiteral.getValueAs(Character.class));
+        e = (RexCall) rexBuilder
+            .makeCall(e.getParserPosition(), e.getOperator(), e.operands.get(0),
+                rexBuilder.makeLiteral(simplifyLikeString(likeStr, escape, '%')),
+                escapeLiteral);
+      }
     }
     return simplifyGenericNode(e);
+  }
+
+  // string 'AA%%__%%AA' simplify to 'AA__%AA'
+  // string with even escapes 'AA\\\\%%__%%AA' simplify to 'AA\\__%AA'
+  // string with odd escapes 'AA\\\\\\%%__%%AA' simplify to 'AA\\\\\\%__%AA'
+  private String simplifyMixedWildcards(String str, char escape) {
+    Pattern pattern = Pattern.compile("[_%]+");
+    Matcher matcher = pattern.matcher(str);
+    StringBuilder builder = new StringBuilder();
+    int from = 0;
+    while (matcher.find()) {
+      int start = matcher.start();
+      String group = requireNonNull(matcher.group(0));
+      if (start > 0
+          && str.charAt(start - 1) == escape
+          && consecutiveSameCharCountBefore(str, start - 1, escape) % 2 == 1) {
+        builder.append(str.substring(from, start + 1));
+        builder.append(simplifyPercentAndUnderline(group.substring(1)));
+      } else {
+        builder.append(str.substring(from, start));
+        builder.append(simplifyPercentAndUnderline(group));
+      }
+      from = matcher.end();
+    }
+    if (from < str.length()) {
+      builder.append(str.substring(from));
+    }
+    return builder.toString();
+  }
+
+  // Tool method: count the number of consecutive identical characters before index
+  private int consecutiveSameCharCountBefore(String str, int index, char escape) {
+    int count = 0;
+    while (index >= 0) {
+      if (str.charAt(index) != escape) {
+        break;
+      }
+      count++;
+      index--;
+    }
+    return count;
+  }
+
+  // Tool method: simplified string mixed with '%' and '_'
+  private String simplifyPercentAndUnderline(String str) {
+    StringBuilder builder = new StringBuilder();
+    boolean containsPercent = false;
+    for (int index = 0; index < str.length(); index++) {
+      if (str.charAt(index) == '%') {
+        containsPercent = true;
+        continue;
+      }
+      if (str.charAt(index) == '_') {
+        builder.append('_');
+      }
+    }
+    if (containsPercent) {
+      builder.append('%');
+    }
+    return builder.toString();
+  }
+
+  /**
+   * Simplifies like string with escape.
+   * A like '%%#%%A%%' escape '#' should simplify to A like '%#%%A%' escape '#'.
+   */
+  private String simplifyLikeString(String content, char escape, char wildcard) {
+    int escapeCount = 0;
+    int wildcardCount = 0;
+    StringBuilder builder = new StringBuilder();
+    for (int index = 0; index < content.length(); index++) {
+      char c = content.charAt(index);
+      if (c == escape) {
+        builder.append(c);
+        escapeCount++;
+        wildcardCount = 0;
+        continue;
+      }
+      if (c == wildcard) {
+        if (escapeCount % 2 == 1) {
+          builder.append(wildcard);
+        } else if (wildcardCount == 0) {
+          builder.append(wildcard);
+          wildcardCount++;
+        }
+        escapeCount = 0;
+        continue;
+      }
+      builder.append(c);
+      escapeCount = 0;
+      wildcardCount = 0;
+    }
+    return simplifyMixedWildcards(builder.toString(), escape);
   }
 
   // e must be a comparison (=, >, >=, <, <=, !=)
@@ -3033,6 +3145,8 @@ public class RexSimplify {
       case EQUALS:
       case NOT_EQUALS:
       case SEARCH:
+      case IS_NOT_DISTINCT_FROM:
+      case IS_DISTINCT_FROM:
         return accept2(((RexCall) e).operands.get(0),
             ((RexCall) e).operands.get(1), e.getKind(), newTerms);
       case IS_NULL:
@@ -3128,9 +3242,16 @@ public class RexSimplify {
       case EQUALS:
         b.addRange(Range.singleton(value), literal.getType());
         return true;
+      case IS_NOT_DISTINCT_FROM:
+        b.addRange(Range.singleton(value), literal.getType(), FALSE);
+        return true;
       case NOT_EQUALS:
         b.addRange(Range.lessThan(value), literal.getType());
         b.addRange(Range.greaterThan(value), literal.getType());
+        return true;
+      case IS_DISTINCT_FROM:
+        b.addRange(Range.lessThan(value), literal.getType(), TRUE);
+        b.addRange(Range.greaterThan(value), literal.getType(), TRUE);
         return true;
       case SEARCH:
         final Sarg sarg = (Sarg) value;
@@ -3176,7 +3297,8 @@ public class RexSimplify {
       if (term instanceof RexSargBuilder) {
         final RexSargBuilder sargBuilder = (RexSargBuilder) term;
         final Sarg sarg = sargBuilder.build();
-        if (sarg.complexity() <= 1 && simpleSarg(sarg)) {
+        boolean isSmall = sarg.complexity() <= 1 || sarg.isAll() || sarg.isNone();
+        if (isSmall && simpleSarg(sarg)) {
           // Expand small sargs into comparisons in order to avoid plan changes
           // and better readability.
           return RexUtil.sargRef(rexBuilder, sargBuilder.ref, sarg,
@@ -3277,10 +3399,14 @@ public class RexSimplify {
     }
 
     void addRange(Range<Comparable> range, RelDataType type) {
+      addRange(range, type, UNKNOWN);
+    }
+
+    void addRange(Range<Comparable> range, RelDataType type, RexUnknownAs unknownAs) {
       types.add(type);
       rangeSet.add(range);
       mergedSarg |= hasSarg;
-      nullAs = nullAs.or(UNKNOWN);
+      nullAs = nullAs.or(unknownAs);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

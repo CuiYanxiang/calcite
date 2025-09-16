@@ -851,6 +851,9 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
     expr("CAST(CAST('123e4567-e89b-12d3-a456-426655440000' AS VARCHAR) AS UUID)").ok();
     expr("CAST(x'123e4567e89b12d3a456426655440000' AS UUID)").ok();
     expr("CAST(CAST(x'123e4567e89b12d3a456426655440000' AS VARBINARY) AS UUID)").ok();
+    expr("CAST(NULL AS UUID)").ok();
+    // Test case for [CALCITE-7158] NULL cannot be cast to UUID
+    sql("SELECT UUID '123e4567-e89b-12d3-a456-426655440000' UNION SELECT NULL").ok();
   }
 
   @Test void testConcatWithCharset() {
@@ -1896,6 +1899,16 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
     sql("select foo()")
         .withTypeCoercion(false)
         .fails("No match found for function signature FOO..");
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7149">[CALCITE-7149]
+   * Constant TIMESTAMPADD expression causes assertion failure in validator</a>. */
+  @Test void testTimestampAdd() {
+    sql("SELECT TIMESTAMPADD(^DOY^, 2, TIMESTAMP '2020-06-21 14:23:44.123')")
+        .fails("'DOY' is not a valid time frame in 'TIMESTAMPADD'");
+    sql("SELECT TIMESTAMPDIFF(^EPOCH^, TIMESTAMP '2020-06-21 14:23:44.123', "
+        + "TIMESTAMP '2022-06-21 14:23:44.123')")
+        .fails("'EPOCH' is not a valid time frame in 'TIMESTAMPDIFF'");
   }
 
   @Test void testInvalidTableFunction() {
@@ -7284,7 +7297,7 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
         + "from emp\n"
         + "group by rollup(deptno)")
         .ok()
-        .type("RecordType(INTEGER DEPTNO, BIGINT NOT NULL C, INTEGER NOT NULL S) NOT NULL");
+        .type("RecordType(INTEGER DEPTNO, BIGINT NOT NULL C, INTEGER S) NOT NULL");
 
     // EMPNO stays NOT NULL because it is not rolled up
     sql("select deptno, empno\n"
@@ -10023,6 +10036,7 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
         + "\n"
         + "< ALL left\n"
         + "< SOME left\n"
+        + "<< left\n"
         + "<= ALL left\n"
         + "<= SOME left\n"
         + "<> ALL left\n"
@@ -13509,6 +13523,47 @@ public class SqlValidatorTest extends SqlValidatorTestCase {
     sql("select * FROM TABLE(ROW_FUNC()) AS T(a, b)")
         .withOperatorTable(operatorTable)
         .type("RecordType(BIGINT NOT NULL A, BIGINT B) NOT NULL");
+  }
+
+  /** Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7134">[CALCITE-7134]
+   * Incorrect type inference for some aggregate functions when groupSets contains '{}'</a>. */
+  @Test void testInferAggregateFunctionType() {
+    // empty grouping sets, SUM is nullable
+    sql("select sum(sal) as s from emp")
+        .ok()
+        .type("RecordType(INTEGER S) NOT NULL");
+
+    // non empty grouping sets, SUM isn't nullable
+    sql("select sum(sal) as s from emp group by deptno")
+        .ok()
+        .type("RecordType(INTEGER NOT NULL S) NOT NULL");
+
+    // ROLLUP contains empty group, SUM is nullable
+    sql("select sum(sal) as s from emp group by rollup(deptno)")
+        .ok()
+        .type("RecordType(INTEGER S) NOT NULL");
+
+    // CUBE contains empty group, SUM is nullable
+    sql("select sum(sal) as s from emp group by cube(deptno)")
+        .ok()
+        .type("RecordType(INTEGER S) NOT NULL");
+
+    // GROUPING SETS that contains empty group, SUM is nullable
+    sql("select sum(sal) as s from emp group by grouping sets(deptno, ())")
+        .ok()
+        .type("RecordType(INTEGER S) NOT NULL");
+
+    // cartesian product of ROLLUP and empno that does not contain empty group, SUM isn't nullable
+    sql("select sum(sal) as s from emp group by rollup(deptno), empno")
+        .ok()
+        .type("RecordType(INTEGER NOT NULL S) NOT NULL");
+
+    // cartesian product of ROLLUP and GROUPING SETS that contains empty group,
+    // SUM is nullable
+    sql("select sum(sal) as s from emp group by rollup(deptno), grouping sets(empno, ())")
+        .ok()
+        .type("RecordType(INTEGER S) NOT NULL");
   }
 
   /** Validator that rewrites columnar sql identifiers 'UNEXPANDED'.'Something'

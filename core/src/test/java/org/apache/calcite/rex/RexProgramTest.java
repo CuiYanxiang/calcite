@@ -2113,6 +2113,35 @@ class RexProgramTest extends RexProgramTestBase {
     checkSimplify(rexNode, "false");
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7160">[CALCITE-7160]
+   * Simplify AND/OR with DISTINCT predicates to SEARCH</a>. */
+  @Test void testSimplifyAndIsDistinctFrom() {
+    RexNode aRef = input(tInt(true), 0);
+    RexLiteral l10 = literal(10);
+    RexLiteral l20 = literal(20);
+    RexLiteral l30 = literal(30);
+
+    checkSimplify(and(isDistinctFrom(aRef, l10), isDistinctFrom(aRef, l20)),
+        "SEARCH($0, Sarg[(-\u221e..10), (10..20), (20..+\u221e); NULL AS TRUE])");
+    checkSimplify(and(isDistinctFrom(aRef, l10), isDistinctFrom(aRef, l20), ne(aRef, l30)),
+        "SEARCH($0, Sarg[(-\u221e..10), (10..20), (20..30), (30..+\u221e)])");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7160">[CALCITE-7160]
+   * Simplify AND/OR with DISTINCT predicates to SEARCH</a>. */
+  @Test void testSimplifyAndIsNotDistinctFrom() {
+    RexNode aRef = input(tInt(true), 0);
+    RexLiteral l10 = literal(10);
+    RexLiteral l20 = literal(20);
+    RexLiteral l30 = literal(30);
+
+    checkSimplify(and(isNotDistinctFrom(aRef, l10), isNotDistinctFrom(aRef, l20)), "false");
+    checkSimplify(and(isNotDistinctFrom(aRef, l10), isNotDistinctFrom(aRef, l20), eq(aRef, l30)),
+        "false");
+  }
+
   /** Unit test for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-4352">[CALCITE-4352]
    * OR simplification incorrectly loses term</a>. */
@@ -3559,6 +3588,34 @@ class RexProgramTest extends RexProgramTestBase {
     checkSimplify(or(eq(literal(10), vInt(0)), isNull(vInt(0))), expected);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7160">[CALCITE-7160]
+   * Simplify AND/OR with DISTINCT predicates to SEARCH</a>. */
+  @Test void testSimplifyOrIsNotDistinctFrom() {
+    RexNode aRef = input(tInt(true), 0);
+    RexLiteral l10 = literal(10);
+    RexLiteral l20 = literal(20);
+    RexLiteral l30 = literal(30);
+
+    checkSimplify(or(isNotDistinctFrom(aRef, l10), isNotDistinctFrom(aRef, l20)),
+        "SEARCH($0, Sarg[10, 20; NULL AS FALSE])");
+    checkSimplify(or(isNotDistinctFrom(aRef, l10), isNotDistinctFrom(aRef, l20), eq(aRef, l30)),
+        "SEARCH($0, Sarg[10, 20, 30])");
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7160">[CALCITE-7160]
+   * Simplify AND/OR with DISTINCT predicates to SEARCH</a>. */
+  @Test void testSimplifyOrIsDistinctFrom() {
+    RexNode aRef = input(tInt(true), 0);
+    RexLiteral l10 = literal(10);
+    RexLiteral l20 = literal(20);
+    RexLiteral l30 = literal(30);
+
+    checkSimplify(or(isDistinctFrom(aRef, l10), isDistinctFrom(aRef, l20)), "true");
+    checkSimplify(or(isDistinctFrom(aRef, l10), isDistinctFrom(aRef, l20), ne(aRef, l30)), "true");
+  }
+
   @Test void testSimplifyOrNot() {
     // "x > 1 OR NOT (y > 2)" -> "x > 1 OR y <= 2"
     checkSimplify(or(gt(vInt(1), literal(1)), not(gt(vInt(2), literal(2)))),
@@ -3938,10 +3995,17 @@ class RexProgramTest extends RexProgramTestBase {
 
   /** Tests
    * <a href="https://issues.apache.org/jira/browse/CALCITE-4094">[CALCITE-4094]
-   * RexSimplify should simplify more always true OR expressions</a>. */
+   * RexSimplify should simplify more always true OR expressions</a>,
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7088">[CALCITE-7088]
+   * Multiple consecutive '%' in the string matched by LIKE should simplify to a single '%'</a>,
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7153">[CALCITE-7153]
+   * Mixed wildcards of _ and % need to be simplified in LIKE operator</a>.
+   * */
   @Test void testSimplifyLike() {
     final RexNode ref = input(tVarchar(true, 10), 0);
     checkSimplify3(like(ref, literal("%")),
+        "OR(null, IS NOT NULL($0))", "IS NOT NULL($0)", "true");
+    checkSimplify3(like(ref, literal("%%%")),
         "OR(null, IS NOT NULL($0))", "IS NOT NULL($0)", "true");
     checkSimplify3(like(ref, literal("%"), literal("#")),
         "OR(null, IS NOT NULL($0))", "IS NOT NULL($0)", "true");
@@ -3952,9 +4016,45 @@ class RexProgramTest extends RexProgramTestBase {
         "OR(IS NOT NULL($0), LIKE($0, '% %'))", "true");
     checkSimplify(or(isNull(ref), like(ref, literal("%"))),
         "true");
+    checkSimplify(or(isNull(ref), like(ref, literal("%%"))),
+        "true");
     checkSimplify(or(isNull(ref), like(ref, literal("%"), literal("#"))),
         "true");
     checkSimplifyUnchanged(like(ref, literal("%A")));
+    checkSimplify(like(ref, literal("%%A")), "LIKE($0, '%A')");
+    checkSimplify(like(ref, literal("%%%_A%%B%%")), "LIKE($0, '_%A%B%')");
+    checkSimplify(like(ref, literal("%%A%%%")), "LIKE($0, '%A%')");
+    checkSimplify(like(ref, literal("%%\\%%A\\%%%%%")), "LIKE($0, '%\\%%A\\%%')");
+    checkSimplify(like(ref, literal("%%A"), literal("#")), "LIKE($0, '%A', '#')");
+    checkSimplify(like(ref, literal("%%#%%A%%"), literal("#")),
+        "LIKE($0, '%#%%A%', '#')");
+    checkSimplify(like(ref, literal("AA%__%BB%_CC")),
+        "LIKE($0, 'AA__%BB_%CC')");
+    checkSimplify(like(ref, literal("%%__%AA%_BB")),
+        "LIKE($0, '__%AA_%BB')");
+    checkSimplify(like(ref, literal("AA\\%%___%BB%%%___%CC")),
+        "LIKE($0, 'AA\\%___%BB___%CC')");
+    checkSimplify(like(ref, literal("AA#%%___%BB%%%___%CC")),
+        "LIKE($0, 'AA#___%BB___%CC')");
+    checkSimplify(like(ref, literal("AA#%%___%BB%%%___%CC"), literal("#")),
+        "LIKE($0, 'AA#%___%BB___%CC', '#')");
+    // odd number of '#', the next % would not be simplified
+    checkSimplify(like(ref, literal("AA###%%___%BB%%%___%CC"), literal("#")),
+        "LIKE($0, 'AA###%___%BB___%CC', '#')");
+    checkSimplify(like(ref, literal("AA\\\\\\%%___%BB%%%___%CC")),
+        "LIKE($0, 'AA\\\\\\%___%BB___%CC')");
+    // even number of '#', the next % would be simplified
+    checkSimplify(like(ref, literal("AA##%%___%BB%%%___%CC"), literal("#")),
+        "LIKE($0, 'AA##___%BB___%CC', '#')");
+    checkSimplify(like(ref, literal("AA\\\\\\\\%%___%BB%%%___%CC")),
+        "LIKE($0, 'AA\\\\\\\\___%BB___%CC')");
+    checkSimplify(like(ref, literal("%%#%#%A%%"), literal("#")),
+        "LIKE($0, '%#%#%A%', '#')");
+    checkSimplify(like(ref, literal("###%%#%#%A%%##%%%"), literal("#")),
+        "LIKE($0, '###%%#%#%A%##%', '#')");
+    checkSimplify(like(ref, literal("###%%#%#%A#%%%#%A%%###%%%"), literal("#")),
+        "LIKE($0, '###%%#%#%A#%%#%A%###%%', '#')");
+    checkSimplifyUnchanged(like(ref, literal("A"), literal("#")));
     checkSimplifyUnchanged(like(ref, literal("%A"), literal("#")));
 
     // As above, but ref is NOT NULL

@@ -3352,6 +3352,14 @@ class SqlToRelConverterTest extends SqlToRelTestBase {
     sql(sql).ok();
   }
 
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7132">[CALCITE-7132]
+   * Inconsistency with type coercion and character types</a>. */
+  @Test void testCoercion() {
+    sql("WITH c AS (SELECT CAST('x' as VARCHAR(2)) AS X, CAST('y' AS CHAR(2)) AS Y)"
+        + "SELECT X = Y AND Y = X FROM c")
+        .ok();
+  }
+
   @Test void testDeleteWhere() {
     final String sql = "delete from emp where deptno = 10";
     sql(sql).ok();
@@ -4333,6 +4341,24 @@ class SqlToRelConverterTest extends SqlToRelTestBase {
     final String sql = ""
         + "select dn.employees[0]['detail']['skills'][0]['others']\n"
         + "from sales.dept_nested dn";
+    sql(sql).ok();
+  }
+
+  @Test void testArraySubquery() {
+    final String sql = "SELECT ARRAY(SELECT empno FROM emp)";
+    sql(sql).ok();
+  }
+
+  @Test void testArraySubqueryOrderByProjectedField() {
+    final String sql = "SELECT ARRAY(SELECT empno FROM emp ORDER BY empno)";
+    sql(sql).ok();
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7135">[CALCITE-7135]
+   * SqlToRelConverter throws AssertionError on ARRAY subquery order by a field that
+   * is not present on the final projection</a>. */
+  @Test void testArraySubqueryOrderByNonProjectedField() {
+    final String sql = "SELECT ARRAY(SELECT empno FROM emp ORDER BY ename)";
     sql(sql).ok();
   }
 

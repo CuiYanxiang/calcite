@@ -17,6 +17,7 @@
 package org.apache.calcite.rel.rel2sql;
 
 import org.apache.calcite.config.NullCollation;
+import org.apache.calcite.plan.Contexts;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelTraitDef;
@@ -33,6 +34,7 @@ import org.apache.calcite.rel.hint.HintStrategyTable;
 import org.apache.calcite.rel.hint.RelHint;
 import org.apache.calcite.rel.logical.LogicalAggregate;
 import org.apache.calcite.rel.logical.LogicalFilter;
+import org.apache.calcite.rel.rules.AggregateGroupingSetsToUnionRule;
 import org.apache.calcite.rel.rules.AggregateJoinTransposeRule;
 import org.apache.calcite.rel.rules.AggregateProjectMergeRule;
 import org.apache.calcite.rel.rules.CoreRules;
@@ -553,6 +555,85 @@ class RelToSqlConverterTest {
     sql(query).ok(expected);
   }
 
+  /**
+   * Tests that an identity project is pruned over scan during SQL conversion,
+   * and that the correct table alias is propagated to the final projection.
+   */
+  @Test void testPruneIdentityProjectOverScan() {
+    final RelBuilder relBuilder =
+        RelBuilder.create(
+        // Disable merge-project optimization by RelBuilder to generate a plan
+        // containing multiple LogicalProject nodes like:
+        // LogicalProject(product_id=[$0])
+        //  LogicalProject(product_id=[$0], product_name=[$2])
+        RelBuilderTest.config().context(
+            Contexts.of(RelBuilder.Config.DEFAULT.withBloat(-1)))
+        .build());
+    final RelNode root = relBuilder
+        .scan("EMP")
+        // This identity project (which would be aliased 't') should not be used in SQL
+        .project(relBuilder.fields(),
+            ImmutableList.of(), true)
+        // This identity project (which would be aliased 't0') should not be used in SQL
+        .project(relBuilder.fields(),
+            ImmutableList.of(), true)
+        // this project should use `EMP` as table alias for fields instead of `t` or `t0`
+        .project(ImmutableList.of(relBuilder.field("EMPNO")),
+            ImmutableList.of(), true)
+        .build();
+    final String expected = "SELECT \"EMP\".\"EMPNO\"\n"
+        + "FROM \"scott\".\"EMP\" AS \"EMP\"";
+    final SqlDialect sqlDialect = new CalciteSqlDialect(CalciteSqlDialect.DEFAULT_CONTEXT) {
+      // Force use of explicit table aliases everywhere
+      @Override public boolean hasImplicitTableAlias() {
+        return false;
+      }
+    };
+    relFn(b -> root).dialect(sqlDialect).ok(expected);
+  }
+
+  /**
+   * Tests that an identity projection over a join is pruned during SQL conversion,
+   * and that the correct table alias is propagated to the final projection.
+   */
+  @Test void testPruneIdentityProjectOverJoin() {
+    final RelBuilder relBuilder =
+        RelBuilder.create(
+        // Disable merge-project optimization by RelBuilder to generate a plan
+        // containing multiple LogicalProject nodes like:
+        // LogicalProject(product_id=[$0])
+        //  LogicalProject(product_id=[$0], product_name=[$2])
+        RelBuilderTest.config().context(
+            Contexts.of(RelBuilder.Config.DEFAULT.withBloat(-1)))
+        .build());
+    final RelNode root = relBuilder
+        .scan("EMP")
+        .project(relBuilder.field("EMPNO"), relBuilder.field("DEPTNO"))
+        .scan("DEPT")
+        .project(relBuilder.field("DEPTNO"))
+        // join alias is `t`
+        .join(JoinRelType.INNER, relBuilder.literal(false))
+        // This identity project (which would be aliased 't1') should not be used in SQL
+        .project(relBuilder.fields(), ImmutableList.of(), true)
+        // The final SQL must use the join's alias ('t') because the
+        // project above is not used in SQL.
+        .project(ImmutableList.of(relBuilder.field("EMPNO")),
+            ImmutableList.of(), true)
+        .build();
+    final String expected = "SELECT \"t\".\"EMPNO\"\n"
+        + "FROM (SELECT \"EMP\".\"EMPNO\", \"EMP\".\"DEPTNO\"\n"
+        + "FROM \"scott\".\"EMP\" AS \"EMP\") AS \"t\"\n"
+        + "INNER JOIN (SELECT \"DEPT\".\"DEPTNO\"\n"
+        + "FROM \"scott\".\"DEPT\" AS \"DEPT\") AS \"t0\" ON FALSE";
+    final SqlDialect sqlDialect = new CalciteSqlDialect(CalciteSqlDialect.DEFAULT_CONTEXT) {
+      // Force use of explicit table aliases everywhere
+      @Override public boolean hasImplicitTableAlias() {
+        return false;
+      }
+    };
+    relFn(b -> root).dialect(sqlDialect).ok(expected);
+  }
+
   /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-5906">[CALCITE-5906]
    * JDBC adapter should generate TABLESAMPLE</a>. */
@@ -672,6 +753,22 @@ class RelToSqlConverterTest {
         + "ORDER BY \"JOB\", 2) AS \"t0\"";
 
     relFn(relFn).ok(expected);
+  }
+
+  /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7147">[CALCITE-7147]
+   * Comparison of INTEGER and BOOLEAN produces strange results</a>. */
+  @Test void testIntBool() {
+    String query = "select FALSE = 256";
+    String expected = "SELECT *\nFROM (VALUES (FALSE)) AS \"t\" (\"EXPR$0\")";
+    sql(query).ok(expected);
+
+    query = "select FALSE = 0.0001e0";
+    expected = "SELECT *\nFROM (VALUES (FALSE)) AS \"t\" (\"EXPR$0\")";
+    sql(query).ok(expected);
+
+    query = "select FALSE = 0.0e0";
+    expected = "SELECT *\nFROM (VALUES (TRUE)) AS \"t\" (\"EXPR$0\")";
+    sql(query).ok(expected);
   }
 
   @Test void testSelectQueryWithWhereClauseOfBasicOperators() {
@@ -3680,6 +3777,26 @@ class RelToSqlConverterTest {
   }
 
   /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7069">[CALCITE-7069]
+   * Invalid unparse for INT UNSIGNED and BIGINT UNSIGNED in MysqlSqlDialect</a>. */
+  @Test void testCastToUnsignedInMySQL() {
+    final String query1 = "select cast(\"product_id\" as bigint unsigned) from \"product\"";
+    // MySQL does not allow cast to BIGINT UNSIGNED; instead cast to UNSIGNED.
+    final String expectedMysql1 = "SELECT CAST(`product_id` AS UNSIGNED)\n"
+        + "FROM `foodmart`.`product`";
+    final String query2 = "select cast(\"product_id\" as integer unsigned) from \"product\"";
+    sql(query1)
+        .withMysql().ok(expectedMysql1)
+        .withStarRocks().ok(expectedMysql1)
+        .withDoris().throws_("Doris doesn't support UNSIGNED TINYINT/SMALLINT/INTEGER/BIGINT!");
+    sql(query2)
+        // MySQL does not allow cast to INTEGER UNSIGNED, and we shouldn't use the next level
+        .withMysql().throws_("MySQL doesn't support UNSIGNED TINYINT/SMALLINT/INTEGER!")
+        .withStarRocks().throws_("StarRocks doesn't support UNSIGNED TINYINT/SMALLINT/INTEGER!")
+        .withDoris().throws_("Doris doesn't support UNSIGNED TINYINT/SMALLINT/INTEGER/BIGINT!");
+  }
+
+  /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-2719">[CALCITE-2719]
    * MySQL does not support cast to BIGINT type</a>
    * and
@@ -4251,7 +4368,7 @@ class RelToSqlConverterTest {
    * Maximum precision of unsigned bigint type in MysqlSqlDialect should be 20</a>. */
   @Test void testCastToUBigInt() {
     String query = "select cast(18446744073709551615 as bigint unsigned) from \"product\"";
-    final String expectedMysql = "SELECT CAST(18446744073709551615 AS BIGINT UNSIGNED)\n"
+    final String expectedMysql = "SELECT CAST(18446744073709551615 AS UNSIGNED)\n"
         + "FROM `foodmart`.`product`";
     final String errMsg = "org.apache.calcite.runtime.CalciteContextException: "
         + "From line 1, column 13 to line 1, column 32: "
@@ -10383,6 +10500,30 @@ class RelToSqlConverterTest {
     sql(sql).ok(expected);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7127">[CALCITE-7127]
+   * RelToSqlConverter corrupts condition inside an anti-join with WHERE NOT EXISTS.</a>. */
+  @Test void testAntiJoinWithComplexInput3() {
+    final String sql = "select e3.\"product_id\", e3.\"product_name\" "
+        + "from ("
+        + "select 1 AS \"additional_column\", e1.\"product_id\", e1.\"product_name\" from \"foodmart\".\"product\" e1 "
+        + "left join \"foodmart\".\"product\" e2 on e1.\"product_id\" = e2.\"product_id\""
+        + ") as e3 "
+        + "where e3.\"product_name\" IS NOT NULL AND NOT EXISTS("
+        + "select 1 from \"foodmart\".\"employee\" e4 "
+        + "where e4.\"employee_id\" = e3.\"additional_column\""
+        + ")";
+    final String expected =
+        "SELECT \"product_id\", \"product_name\"\n"
+            + "FROM (SELECT 1 AS \"additional_column\", \"product\".\"product_id\", \"product\".\"product_name\"\n"
+            + "FROM \"foodmart\".\"product\"\n"
+            + "LEFT JOIN \"foodmart\".\"product\" AS \"product0\" ON \"product\".\"product_id\" = \"product0\".\"product_id\") AS \"t\"\n"
+            + "WHERE \"product_name\" IS NOT NULL AND NOT EXISTS (SELECT *\n"
+            + "FROM \"foodmart\".\"employee\"\n"
+            + "WHERE \"employee_id\" = \"t\".\"additional_column\")";
+    sql(sql).ok(expected);
+  }
+
   @Test void testFilterWithSubQuery() {
     final String sql = "SELECT * FROM "
         + "(select * from ("
@@ -10520,6 +10661,64 @@ class RelToSqlConverterTest {
         + "FROM \"scott\".\"DEPT\"";
 
     relFn(relFn).ok(expected);
+  }
+
+  /** Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7116">[CALCITE-7116]
+   * Optimize queries with GROUPING SETS by converting them
+   * into equivalent UNION ALL of GROUP BY operations</a>. */
+  @Test void testAggregateGroupingSetsToUnionRule() {
+    final String query = "SELECT deptno, job, sal, SUM(comm),\n"
+        + "       GROUPING(deptno) AS deptno_flag,\n"
+        + "       GROUPING(job) AS job_flag,\n"
+        + "       GROUPING(sal) AS sal_flag,\n"
+        + "       GROUP_ID() AS group_id\n"
+        + "FROM emp\n"
+        + "GROUP BY GROUPING SETS ((deptno, job), (deptno, sal), (deptno, job))";
+    final String expected = "SELECT \"DEPTNO\", \"JOB\", \"SAL\", \"EXPR$3\", \"DEPTNO_FLAG\","
+        + " \"JOB_FLAG\", \"SAL_FLAG\", 0 AS \"GROUP_ID\"\nFROM (SELECT \"DEPTNO\", \"JOB\","
+        + " CAST(NULL AS DECIMAL(7, 2)) AS \"SAL\", SUM(\"COMM\") AS \"EXPR$3\","
+        + " 0 AS \"DEPTNO_FLAG\", 0 AS \"JOB_FLAG\", 1 AS \"SAL_FLAG\"\n"
+        + "FROM \"SCOTT\".\"EMP\"\n"
+        + "GROUP BY \"DEPTNO\", \"JOB\"\n"
+        + "UNION ALL\n"
+        + "SELECT \"DEPTNO\", CAST(NULL AS VARCHAR(9) CHARACTER SET \"ISO-8859-1\") AS \"JOB\","
+        + " \"SAL\", SUM(\"COMM\") AS \"EXPR$3\", 0 AS \"DEPTNO_FLAG\", 1 AS \"JOB_FLAG\","
+        + " 0 AS \"SAL_FLAG\"\n"
+        + "FROM \"SCOTT\".\"EMP\"\nGROUP BY \"DEPTNO\", \"SAL\") AS \"t5\"\n"
+        + "UNION ALL\nSELECT \"DEPTNO\", \"JOB\", CAST(NULL AS DECIMAL(7, 2)) AS \"SAL\","
+        + " SUM(\"COMM\"), GROUPING(\"DEPTNO\") AS \"DEPTNO_FLAG\","
+        + " GROUPING(\"JOB\") AS \"JOB_FLAG\", 1 AS \"SAL_FLAG\", 1 AS \"GROUP_ID\"\n"
+        + "FROM \"SCOTT\".\"EMP\"\n"
+        + "GROUP BY \"DEPTNO\", \"JOB\"";
+
+    HepProgramBuilder builder = new HepProgramBuilder();
+    builder.addRuleClass(AggregateGroupingSetsToUnionRule.class);
+    HepPlanner hepPlanner = new HepPlanner(builder.build());
+    RuleSet rules =
+        RuleSets.ofList(CoreRules.AGGREGATE_GROUPING_SETS_TO_UNION);
+
+    sql(query)
+        .schema(CalciteAssert.SchemaSpec.JDBC_SCOTT)
+        .withCalcite()
+        .optimize(rules, hepPlanner)
+        .ok(expected);
+  }
+
+  /** Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7157">[CALCITE-7157]
+   * PostgreSQL does not support string literal in ORDER BY clause</a>. */
+  @Test void testSqlDialectOrdreByLiteralSimple() {
+    final String query = "SELECT deptno, job\n"
+        + "FROM emp\n"
+        + "ORDER BY empno, 'abc'";
+    final String expected = "SELECT \"DEPTNO\", \"JOB\"\n"
+        + "FROM \"SCOTT\".\"EMP\"\n"
+        + "ORDER BY \"EMPNO\"";
+    sql(query)
+        .schema(CalciteAssert.SchemaSpec.JDBC_SCOTT)
+        .withPostgresql()
+        .ok(expected);
   }
 
   /** Fluid interface to run tests. */
