@@ -38,8 +38,10 @@ import org.apache.calcite.rel.rules.AggregateGroupingSetsToUnionRule;
 import org.apache.calcite.rel.rules.AggregateJoinTransposeRule;
 import org.apache.calcite.rel.rules.AggregateProjectMergeRule;
 import org.apache.calcite.rel.rules.CoreRules;
+import org.apache.calcite.rel.rules.FilterCorrelateRule;
 import org.apache.calcite.rel.rules.FilterJoinRule;
 import org.apache.calcite.rel.rules.FullToLeftAndRightJoinRule;
+import org.apache.calcite.rel.rules.JoinToCorrelateRule;
 import org.apache.calcite.rel.rules.ProjectOverSumToSum0Rule;
 import org.apache.calcite.rel.rules.ProjectToWindowRule;
 import org.apache.calcite.rel.rules.PruneEmptyRules;
@@ -2052,6 +2054,67 @@ class RelToSqlConverterTest {
   }
 
   /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7207">[CALCITE-7207]
+   * Semi Join RelNode cannot be translated into correct MySQL SQL</a>. */
+  @Test void testSemiJoinMysqlNoExtraAlias() {
+    final RelBuilder builder = relBuilder();
+    // Create the left side
+    RelNode leftSubBase = builder
+        .scan("EMP")
+        .project(builder.field("EMPNO"))
+        .build();
+    RelNode leftJoin = builder
+        .push(leftSubBase)
+        .scan("EMP")
+        .join(
+            JoinRelType.INNER, builder.equals(
+            builder.field(2, 0, "EMPNO"),
+            builder.field(2, 1, "EMPNO")))
+        .project(builder.field(0), builder.field(1))
+        .build();
+
+    // Create the right side
+    RelNode rightSubBase = builder
+        .scan("EMP")
+        .project(builder.field("EMPNO"))
+        .build();
+    RelNode rightJoin = builder
+        .push(rightSubBase)
+        .scan("EMP")
+        .join(
+            JoinRelType.INNER, builder.equals(
+            builder.field(2, 0, "EMPNO"),
+            builder.field(2, 1, "EMPNO")))
+        .project(builder.field(0), builder.field(1))
+        .build();
+
+    // Top-level SEMI join
+    final RelNode root = builder
+        .push(leftJoin)
+        .push(rightJoin)
+        .join(
+            JoinRelType.SEMI,
+            builder.and(
+                builder.equals(builder.field(2, 1, "EMPNO"), builder.field(2, 0, "EMPNO")),
+                builder.call(SqlStdOperatorTable.LESS_THAN,
+                    builder.field(2, 1, "EMPNO"), builder.field(2, 0, "EMPNO"))))
+        .project(builder.field(0), builder.field(1))
+        .build();
+
+    final String expected = "SELECT \"t\".\"EMPNO\", \"EMP0\".\"EMPNO\" AS \"EMPNO0\"\n"
+        + "FROM (SELECT \"EMPNO\"\n"
+        + "FROM \"scott\".\"EMP\") AS \"t\"\n"
+        + "INNER JOIN \"scott\".\"EMP\" AS \"EMP0\" ON \"t\".\"EMPNO\" = \"EMP0\".\"EMPNO\"\n"
+        + "WHERE EXISTS (SELECT 1\n"
+        + "FROM (SELECT \"t1\".\"EMPNO\", \"EMP2\".\"EMPNO\" AS \"EMPNO0\"\n"
+        + "FROM (SELECT \"EMPNO\"\nFROM \"scott\".\"EMP\") AS \"t1\"\n"
+        + "INNER JOIN \"scott\".\"EMP\" AS \"EMP2\""
+        + " ON \"t1\".\"EMPNO\" = \"EMP2\".\"EMPNO\") AS \"t2\"\n"
+        + "WHERE \"t\".\"EMPNO\" = \"t2\".\"EMPNO\" AND \"t\".\"EMPNO\" > \"t2\".\"EMPNO\")";
+    assertThat(toSql(root), isLinux(expected));
+  }
+
+  /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-2792">[CALCITE-2792]
    * StackOverflowError while evaluating filter with large number of OR
    * conditions</a>. */
@@ -3165,9 +3228,85 @@ class RelToSqlConverterTest {
   }
 
   /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7087">[CALCITE-7087]
+   * SQLite does not support RIGHT/FULL JOIN until version 3.39.0</a>. */
+  @Test void testSqliteRightJoinRewrittenToLeftOnOldVersion() {
+    final String query = "SELECT \"EMP\".\"ENAME\", \"DEPT\".\"DNAME\"\n"
+        + "FROM \"scott\".\"EMP\"\n"
+        + "RIGHT JOIN \"scott\".\"DEPT\" ON \"EMP\".\"DEPTNO\" = \"DEPT\".\"DEPTNO\"";
+    final String expected = "SELECT \"EMP\".\"ENAME\", \"DEPT\".\"DNAME\"\n"
+        + "FROM \"scott\".\"DEPT\"\n"
+        + "LEFT JOIN \"scott\".\"EMP\" ON \"DEPT\".\"DEPTNO\" = \"EMP\".\"DEPTNO\"";
+    sql(query)
+        .schema(CalciteAssert.SchemaSpec.SCOTT)
+        .withSQLite(3, 38)
+        .ok(expected);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7087">[CALCITE-7087]
+   * SQLite does not support RIGHT/FULL JOIN until version 3.39.0</a>. */
+  @Test void testSqliteRightJoinKeptOnNewerVersion() {
+    final String query = "SELECT \"EMP\".\"ENAME\", \"DEPT\".\"DNAME\"\n"
+        + "FROM \"scott\".\"EMP\"\n"
+        + "RIGHT JOIN \"scott\".\"DEPT\" ON \"EMP\".\"DEPTNO\" = \"DEPT\".\"DEPTNO\"";
+    sql(query)
+        .schema(CalciteAssert.SchemaSpec.SCOTT)
+        .withSQLite(3, 39)
+        .ok(query);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7087">[CALCITE-7087]
+   * SQLite does not support RIGHT/FULL JOIN until version 3.39.0</a>. */
+  @Test void testSqliteFullJoinThrowsOnOldVersion() {
+    final String query = "SELECT \"EMP\".\"ENAME\", \"DEPT\".\"DNAME\"\n"
+        + "FROM \"scott\".\"EMP\"\n"
+        + "FULL JOIN \"scott\".\"DEPT\" ON \"EMP\".\"DEPTNO\" = \"DEPT\".\"DEPTNO\"";
+    final String expected = "SELECT \"ENAME\", \"DNAME\"\n"
+        + "FROM (SELECT *\n"
+        + "FROM \"scott\".\"EMP\"\n"
+        + "LEFT JOIN \"scott\".\"DEPT\" ON \"EMP\".\"DEPTNO\" = \"DEPT\".\"DEPTNO\"\n"
+        + "UNION ALL\n"
+        + "SELECT *\n"
+        + "FROM (SELECT \"EMP0\".\"EMPNO\","
+        + " \"EMP0\".\"ENAME\","
+        + " \"EMP0\".\"JOB\","
+        + " \"EMP0\".\"MGR\","
+        + " \"EMP0\".\"HIREDATE\","
+        + " \"EMP0\".\"SAL\","
+        + " \"EMP0\".\"COMM\","
+        + " \"EMP0\".\"DEPTNO\","
+        + " \"DEPT0\".\"DEPTNO\" AS \"DEPTNO0\","
+        + " \"DEPT0\".\"DNAME\","
+        + " \"DEPT0\".\"LOC\"\n"
+        + "FROM \"scott\".\"DEPT\" AS \"DEPT0\"\n"
+        + "LEFT JOIN \"scott\".\"EMP\" AS \"EMP0\""
+        + " ON \"DEPT0\".\"DEPTNO\" = \"EMP0\".\"DEPTNO\") AS \"t\"\n"
+        + "WHERE \"t\".\"DEPTNO\" = \"t\".\"DEPTNO0\" IS NOT TRUE) AS \"t1\"";
+    sql(query)
+        .schema(CalciteAssert.SchemaSpec.SCOTT)
+        .withSQLite(3, 38)
+        .ok(expected);
+  }
+
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7087">[CALCITE-7087]
+   * SQLite does not support RIGHT/FULL JOIN until version 3.39.0</a>. */
+  @Test void testSqliteFullJoinKeptOnNewerVersion() {
+    final String query = "SELECT *\n"
+        + "FROM \"scott\".\"EMP\"\n"
+        + "FULL JOIN \"scott\".\"DEPT\""
+        + " ON \"EMP\".\"DEPTNO\" = \"DEPT\".\"DEPTNO\"";
+    sql(query)
+        .schema(CalciteAssert.SchemaSpec.SCOTT)
+        .withSQLite(3, 39)
+        .ok(query);
+  }
+
+  /** Test case for
    * <a href="https://issues.apache.org/jira/browse/CALCITE-3771">[CALCITE-3771]
    * Support of TRIM function for SPARK dialect and improvement in HIVE Dialect</a>. */
-
   @Test void testHiveAndSparkTrimWithLeadingChar() {
     final String query = "SELECT TRIM(LEADING 'a' from 'abcd')\n"
         + "from \"foodmart\".\"reserve_employee\"";
@@ -3434,6 +3573,19 @@ class RelToSqlConverterTest {
         .withDoris().ok(expectedStarRocks);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7309">[CALCITE-7309]
+   * Position is unparsed incorrectly for ClickHouseSqlDialect</a>. */
+  @Test void testPositionForClickHouse() {
+    final String query = "SELECT POSITION('a' IN 'abca')";
+    final String expected = "SELECT POSITION('abca', 'a')";
+    sql(query).withClickHouse().ok(expected);
+
+    final String query1 = "SELECT POSITION('a' IN 'abca' FROM 1)";
+    final String expected1 = "SELECT POSITION('abca', 'a', 1)";
+    sql(query1).withClickHouse().ok(expected1);
+  }
+
   @Test void testPositionFunctionForSqlite() {
     final String query = "select position('A' IN 'ABC') from \"product\"";
     final String expected = "SELECT INSTR('ABC', 'A')\n"
@@ -3448,11 +3600,19 @@ class RelToSqlConverterTest {
     sql(query).withHive().ok(expected);
   }
 
+  /** Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7322">[CALCITE-7322]
+   * The POSITION function in MySQL is missing the FROM clause</a>. */
   @Test void testPositionFunctionForMySql() {
     final String query = "select position('A' IN 'ABC') from \"product\"";
-    final String expected = "SELECT INSTR('ABC', 'A')\n"
+    final String expected = "SELECT LOCATE('A', 'ABC')\n"
         + "FROM `foodmart`.`product`";
     sql(query).withMysql().ok(expected);
+
+    final String query1 = "select position('A' IN 'ABC' FROM '2') from \"product\"";
+    final String expected1 = "SELECT LOCATE('A', 'ABC', 2)\n"
+        + "FROM `foodmart`.`product`";
+    sql(query1).withMysql().ok(expected1);
   }
 
   @Test void testPositionFunctionForBigQuery() {
@@ -9499,6 +9659,64 @@ class RelToSqlConverterTest {
     sql(sql6).ok(expected6);
   }
 
+  /** Test cases for <a href="https://issues.apache.org/jira/browse/CALCITE-7131">[CALCITE-7131]
+   * SqlImplementor.toSql does not handle GEOMETRY literals</a>. */
+  @Test void testGeometry() {
+    final String sql = "SELECT ST_AsWKB('POLYGON((0 0, 0 1, 1 1, 1 0, 0 0))')";
+    final String expected = "SELECT \"ST_ASWKB\"('POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))')\n"
+        + "FROM (VALUES (0)) AS \"t\" (\"ZERO\")";
+    sql(sql)
+        .withLibrary(SqlLibrary.SPATIAL)
+        .ok(expected);
+
+    final String sql1 = "SELECT ST_MakePoint(1, 2, 3)";
+    final String expected1 = "SELECT \"ST_MAKEPOINT\"(1, 2, 3)\n"
+        + "FROM (VALUES (0)) AS \"t\" (\"ZERO\")";
+    sql(sql1)
+        .withLibrary(SqlLibrary.SPATIAL)
+        .ok(expected1);
+
+    final String sql2 =
+        "SELECT ST_MakePolygon('LINESTRING(100 250, 100 350, 200 350, 200 250, 100 250)')";
+    final String expected2 =
+        "SELECT \"ST_MAKEPOLYGON\"('LINESTRING (100 250, 100 350, 200 350, 200 250, 100 250)')\n"
+        + "FROM (VALUES (0)) AS \"t\" (\"ZERO\")";
+    sql(sql2)
+        .withLibrary(SqlLibrary.SPATIAL)
+        .ok(expected2);
+
+    final String sql3 = "SELECT ST_MakeLine(ST_Point(1, 2), ST_Point(3, 4))";
+    final String expected3 =
+        "SELECT \"ST_MAKELINE\"(\"ST_POINT\"(1, 2), \"ST_POINT\"(3, 4))\n"
+            + "FROM (VALUES (0)) AS \"t\" (\"ZERO\")";
+    sql(sql3)
+        .withLibrary(SqlLibrary.SPATIAL)
+        .ok(expected3);
+
+    final String sql4 = "SELECT ST_AsBinary('LINESTRING (1 2, 3 4)')";
+    final String expected4 =
+        "SELECT \"ST_ASBINARY\"('LINESTRING (1 2, 3 4)')\n"
+            + "FROM (VALUES (0)) AS \"t\" (\"ZERO\")";
+    sql(sql4)
+        .withLibrary(SqlLibrary.SPATIAL)
+        .ok(expected4);
+
+    final String sql5 = "SELECT ST_AsEWKT(ST_PointFromText('POINT(-71.064544 42.28787)', 4326))";
+    final String expected5 =
+        "SELECT \"ST_ASEWKT\"(\"ST_POINTFROMTEXT\"('POINT(-71.064544 42.28787)', 4326))\n"
+            + "FROM (VALUES (0)) AS \"t\" (\"ZERO\")";
+    sql(sql5)
+        .withLibrary(SqlLibrary.SPATIAL)
+        .ok(expected5);
+
+    final String sql6 = "SELECT ST_MakePoint(NULL, 2)";
+    final String expected6 = "SELECT \"ST_MAKEPOINT\"(NULL, 2)\n"
+        + "FROM (VALUES (0)) AS \"t\" (\"ZERO\")";
+    sql(sql6)
+        .withLibrary(SqlLibrary.SPATIAL)
+        .ok(expected6);
+  }
+
   /** Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7128">[CALCITE-7128]
    * SqlImplementor.toSql does not handle UUID literals</a>. */
   @Test void testUuid() {
@@ -9506,6 +9724,102 @@ class RelToSqlConverterTest {
     final String expected = "SELECT *\n"
         + "FROM (VALUES (UUID '123e4567-e89b-12d3-a456-426655440000')) AS \"t\" (\"X\")";
     sql(sql).ok(expected);
+  }
+
+  @Test void testUpdate() {
+    final String sql0 = "update \"foodmart\".\"product\"\n"
+        + "set \"product_name\" = 'calcite'";
+    final String expected0 = "UPDATE \"foodmart\".\"product\" SET \"product_name\" = "
+        + "'calcite'";
+    sql(sql0).ok(expected0);
+
+    final String sql1 = "update \"foodmart\".\"product\"\n"
+        + "set \"product_name\" = 'calcite'\n"
+        + "where \"product_id\" = 1";
+    final String expected1 = "UPDATE \"foodmart\".\"product\" SET \"product_name\" = "
+        + "'calcite'\nWHERE \"product_id\" = 1";
+    sql(sql1).ok(expected1);
+
+    final String sql2 = "update \"foodmart\".\"product\"\n"
+        + "set \"product_name\" = 'calcite', \"product_id\" = 10\n"
+        + "where \"product_id\" = 1";
+    final String expected2 = "UPDATE \"foodmart\".\"product\" SET \"product_name\" = 'calcite', "
+        + "\"product_id\" = 10\nWHERE \"product_id\" = 1";
+    sql(sql2).ok(expected2);
+  }
+
+  /**
+   * Test case for <a href="https://issues.apache.org/jira/browse/CALCITE-7220">[CALCITE-7220]
+   * RelToSqlConverter throws exception for UPDATE with self-referencing column in SET</a>.
+   */
+  @Test void testUpdateSetWithColumnReference() {
+    final String sql0 = "update \"foodmart\".\"product\" "
+        + "set \"product_name\" = \"product_name\" || '_'\n"
+        + "where \"product_id\" > 10";
+    final String expected0 = "UPDATE \"foodmart\".\"product\" SET \"product_name\" = CAST"
+        + "(\"product_name\" || '_' AS VARCHAR(60) CHARACTER SET \"ISO-8859-1\")\nWHERE "
+        + "\"product_id\" > 10";
+    sql(sql0).ok(expected0);
+
+    final String sql1 = "update \"foodmart\".\"product\""
+        + "set \"product_id\" = \"product_id\" + char_length(\"product_name\")"
+        + "where \"product_id\" > 10";
+    final String expected1 = "UPDATE \"foodmart\".\"product\" SET \"product_id\" = \"product_id\""
+        + " + CHAR_LENGTH(\"product_name\")\nWHERE \"product_id\" > 10";
+    sql(sql1).ok(expected1);
+
+    final String sql2 = "update \"foodmart\".\"product\""
+        + "set\n"
+        + "   \"product_id\" = \"product_id\" + char_length(\"product_name\"),\n"
+        + "   \"product_name\" = \"product_name\" || '_' \n"
+        + "where \"product_id\" > 10";
+    final String expected2 = "UPDATE \"foodmart\".\"product\" SET \"product_id\" = \"product_id\""
+        + " + CHAR_LENGTH(\"product_name\"), \"product_name\" = CAST(\"product_name\" || '_' AS "
+        + "VARCHAR(60) CHARACTER SET \"ISO-8859-1\")\nWHERE \"product_id\" > 10";
+    sql(sql2).ok(expected2);
+
+    final String sql3 = "update \"foodmart\".\"product\"\n"
+        + "set \"product_name\" = 'calcite'\n"
+        + "where \"product_id\" in (\n"
+        + "   select \"product_id\" from \"foodmart\".\"product\" where \"product_id\" < 10"
+        + ")";
+    final String expected3 = "UPDATE \"foodmart\".\"product\" SET \"product_name\" = "
+        + "'calcite'\nWHERE \"product_id\" IN (SELECT \"product_id\"\nFROM \"foodmart\""
+        + ".\"product\"\nWHERE \"product_id\" < 10)";
+    sql(sql3).ok(expected3);
+  }
+
+  /**
+   * Test case for
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-5122">[CALCITE-5122]
+   * Update query with correlated throws AssertionError "field ordinal 0 out of range"</a>.
+   */
+  @Test void testUpdateWithCorrelatedInSet() {
+    final String sql0 = "update \"foodmart\".\"product\" a set \"product_id\" = "
+        + "(select \"product_class_id\" from \"foodmart\".\"product_class\" b "
+        + "where a.\"product_class_id\" = b.\"product_class_id\")";
+    final String expected0 = "UPDATE \"foodmart\".\"product\" SET \"product_id\" = (((SELECT "
+        + "\"product_class_id\"\nFROM \"foodmart\".\"product_class\"\nWHERE \"product\""
+        + ".\"product_class_id\" = \"product_class_id\")))";
+    sql(sql0).ok(expected0);
+
+    final String sql1 = "update \"foodmart\".\"product\" a set \"brand_name\" = "
+        + "(select cast(\"product_category\" as varchar(60)) from \"foodmart\".\"product_class\" b "
+        + "where a.\"product_class_id\" = b.\"product_class_id\")";
+    final String expected1 = "UPDATE \"foodmart\".\"product\" SET \"brand_name\" = (((SELECT CAST"
+        + "(\"product_category\" AS VARCHAR(60) CHARACTER SET \"ISO-8859-1\")\nFROM \"foodmart\""
+        + ".\"product_class\"\nWHERE \"product\".\"product_class_id\" = \"product_class_id\")))";
+    sql(sql1).ok(expected1);
+
+    final String sql2 = "update \"foodmart\".\"product\"\n"
+        + "set \"product_name\" = 'calcite'\n"
+        + "where \"product_id\" in (\n"
+        + "   select \"product_id\" from \"foodmart\".\"product\" where \"product_id\" < 10"
+        + ")";
+    final String expected2 = "UPDATE \"foodmart\".\"product\" SET \"product_name\" = "
+        + "'calcite'\nWHERE \"product_id\" IN (SELECT \"product_id\"\nFROM \"foodmart\""
+        + ".\"product\"\nWHERE \"product_id\" < 10)";
+    sql(sql2).ok(expected2);
   }
 
   /** Test case for
@@ -10518,7 +10832,7 @@ class RelToSqlConverterTest {
             + "FROM (SELECT 1 AS \"additional_column\", \"product\".\"product_id\", \"product\".\"product_name\"\n"
             + "FROM \"foodmart\".\"product\"\n"
             + "LEFT JOIN \"foodmart\".\"product\" AS \"product0\" ON \"product\".\"product_id\" = \"product0\".\"product_id\") AS \"t\"\n"
-            + "WHERE \"product_name\" IS NOT NULL AND NOT EXISTS (SELECT *\n"
+            + "WHERE NOT EXISTS (SELECT *\n"
             + "FROM \"foodmart\".\"employee\"\n"
             + "WHERE \"employee_id\" = \"t\".\"additional_column\")";
     sql(sql).ok(expected);
@@ -10721,6 +11035,66 @@ class RelToSqlConverterTest {
         .ok(expected);
   }
 
+  /** Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7319">[CALCITE-7319]
+   * FILTER_INTO_JOIN rule loses correlation variable context in HepPlanner</a>. */
+  @Test void testFilterIntoJoinMissingVariableCor() {
+    final String sql = "SELECT E.EMPNO\n"
+        + "FROM EMP E\n"
+        + "JOIN DEPT D ON E.DEPTNO = D.DEPTNO\n"
+        + "WHERE D.DEPTNO = (\n"
+        + "  SELECT MIN(D_INNER.DEPTNO)\n"
+        + "  FROM DEPT D_INNER\n"
+        + "  WHERE D_INNER.DEPTNO = E.DEPTNO)";
+    final String expected = "SELECT \"EMP\".\"EMPNO\"\n"
+        + "FROM \"SCOTT\".\"EMP\"\n"
+        + "INNER JOIN \"SCOTT\".\"DEPT\" ON \"EMP\".\"DEPTNO\" = \"DEPT\".\"DEPTNO\"\n"
+        + "WHERE \"DEPT\".\"DEPTNO\" = (((SELECT MIN(\"DEPTNO\")\n"
+        + "FROM \"SCOTT\".\"DEPT\"\n"
+        + "WHERE \"DEPTNO\" = \"EMP\".\"DEPTNO\")))";
+
+    HepProgramBuilder builder = new HepProgramBuilder();
+    builder.addRuleClass(FilterJoinRule.FilterIntoJoinRule.class);
+    HepPlanner hepPlanner = new HepPlanner(builder.build());
+    RuleSet rules = RuleSets.ofList(CoreRules.FILTER_INTO_JOIN);
+    sql(sql)
+        .schema(CalciteAssert.SchemaSpec.JDBC_SCOTT)
+        .withCalcite()
+        .optimize(rules, hepPlanner)
+        .ok(expected);
+  }
+
+  /** Test case of
+   * <a href="https://issues.apache.org/jira/browse/CALCITE-7326">[CALCITE-7326]
+   * FILTER_CORRELATE rule loses correlation variable context in HepPlanner</a>. */
+  @Test void testFilterCorrelateMissingVariableCor() {
+    final String sql = "SELECT E.EMPNO\n"
+        + "FROM EMP E\n"
+        + "JOIN DEPT D ON E.DEPTNO = D.DEPTNO\n"
+        + "WHERE D.DEPTNO = (\n"
+        + "  SELECT MIN(D_INNER.DEPTNO)\n"
+        + "  FROM DEPT D_INNER\n"
+        + "  WHERE D_INNER.DEPTNO = E.DEPTNO)";
+    final String expected = "SELECT \"$cor1\".\"EMPNO\"\n"
+        + "FROM \"SCOTT\".\"EMP\" AS \"$cor1\",\n"
+        + "LATERAL (SELECT *\nFROM \"SCOTT\".\"DEPT\"\n"
+        + "WHERE \"$cor1\".\"DEPTNO\" = \"DEPTNO\") AS \"t\"\n"
+        + "WHERE \"t\".\"DEPTNO\" = (((SELECT MIN(\"DEPTNO\")\n"
+        + "FROM \"SCOTT\".\"DEPT\"\nWHERE \"DEPTNO\" = \"$cor1\".\"DEPTNO\")))";
+    HepProgramBuilder builder = new HepProgramBuilder();
+    builder.addRuleClass(JoinToCorrelateRule.class);
+    builder.addRuleClass(FilterCorrelateRule.class);
+    HepPlanner hepPlanner = new HepPlanner(builder.build());
+    RuleSet rules =
+        RuleSets.ofList(CoreRules.JOIN_TO_CORRELATE,
+            CoreRules.FILTER_CORRELATE);
+    sql(sql)
+        .schema(CalciteAssert.SchemaSpec.JDBC_SCOTT)
+        .withCalcite()
+        .optimize(rules, hepPlanner)
+        .ok(expected);
+  }
+
   /** Fluid interface to run tests. */
   static class Sql {
     private final CalciteAssert.SchemaSpec schemaSpec;
@@ -10871,6 +11245,13 @@ class RelToSqlConverterTest {
 
     Sql withSQLite() {
       return dialect(DatabaseProduct.SQLITE.getDialect());
+    }
+
+    Sql withSQLite(int majorVersion, int minorVersion) {
+      return dialect(
+          new SqliteSqlDialect(SqliteSqlDialect.DEFAULT_CONTEXT
+              .withDatabaseMajorVersion(majorVersion)
+              .withDatabaseMinorVersion(minorVersion)));
     }
 
     Sql withSybase() {

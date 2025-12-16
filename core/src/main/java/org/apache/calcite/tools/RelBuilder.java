@@ -36,6 +36,7 @@ import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Aggregate;
 import org.apache.calcite.rel.core.AggregateCall;
+import org.apache.calcite.rel.core.Combine;
 import org.apache.calcite.rel.core.Correlate;
 import org.apache.calcite.rel.core.CorrelationId;
 import org.apache.calcite.rel.core.Filter;
@@ -252,6 +253,13 @@ public class RelBuilder {
     return Frameworks.withPrepare(config,
         (cluster, relOptSchema, rootSchema, statement) ->
             new RelBuilder(config.getContext(), cluster, relOptSchema));
+  }
+
+  /** Creates a RelBuilder with a given RelOptCluster. */
+  public static RelBuilder create(FrameworkConfig config, RelOptCluster existingCluster) {
+    return Frameworks.withPrepare(config,
+        (cluster, relOptSchema, rootSchema, statement) ->
+            new RelBuilder(config.getContext(), existingCluster, relOptSchema));
   }
 
   /** Creates a copy of this RelBuilder, with the same state as this, applying
@@ -741,6 +749,11 @@ public class RelBuilder {
   }
 
   /** Creates a call to a scalar operator. */
+  public RexNode call(SqlParserPos pos, SqlOperator operator, RexNode... operands) {
+    return call(pos, operator, ImmutableList.copyOf(operands));
+  }
+
+  /** Creates a call to a scalar operator. */
   private RexCall call(SqlParserPos pos, SqlOperator operator, List<RexNode> operandList) {
     switch (operator.getKind()) {
     case LIKE:
@@ -1185,8 +1198,8 @@ public class RelBuilder {
     return cast(SqlParserPos.ZERO, expr, typeName, precision);
   }
 
-    /** Creates an expression that casts an expression to a type with a given name
-     * and precision or length. */
+  /** Creates an expression that casts an expression to a type with a given name
+   * and precision or length. */
   public RexNode cast(SqlParserPos pos, RexNode expr, SqlTypeName typeName, int precision) {
     final RelDataType type =
         cluster.getTypeFactory().createSqlType(typeName, precision);
@@ -1218,7 +1231,7 @@ public class RelBuilder {
    *
    * @see #project
    */
-  public RexNode alias(RexNode expr, String alias) {
+  public RexNode alias(SqlParserPos pos, RexNode expr, String alias) {
     final RexNode aliasLiteral = literal(alias);
     switch (expr.getKind()) {
     case AS:
@@ -1230,8 +1243,12 @@ public class RelBuilder {
       expr = call.operands.get(0);
       // strip current (incorrect) alias, and fall through
     default:
-      return call(SqlStdOperatorTable.AS, expr, aliasLiteral);
+      return call(pos, SqlStdOperatorTable.AS, expr, aliasLiteral);
     }
+  }
+
+  public RexNode alias(RexNode expr, String alias) {
+    return alias(SqlParserPos.ZERO, expr, alias);
   }
 
   private RexNode aliasMaybe(RexNode node, @Nullable String name) {
@@ -1920,8 +1937,13 @@ public class RelBuilder {
     if (config.simplify()) {
       conjunctionPredicates = simplifier.simplifyFilterPredicates(predicates);
     } else {
+      List<RexNode> simplified = new ArrayList<>();
+      for (RexNode predicate : predicates) {
+        RexNode simple = RexSimplify.simplifyComparisonWithNull(predicate, getRexBuilder());
+        simplified.add(simple);
+      }
       conjunctionPredicates =
-          RexUtil.composeConjunction(simplifier.rexBuilder, predicates);
+          RexUtil.composeConjunction(simplifier.rexBuilder, simplified);
     }
 
     if (conjunctionPredicates == null || conjunctionPredicates.isAlwaysFalse()) {
@@ -2360,11 +2382,11 @@ public class RelBuilder {
     stack.push(
         new Frame(
           new Uncollect(
-            cluster,
-            cluster.traitSetOf(Convention.NONE),
-            frame.rel,
-            withOrdinality,
-            requireNonNull(itemAliases, "itemAliases"))));
+              cluster,
+              cluster.traitSetOf(Convention.NONE),
+              frame.rel,
+              withOrdinality,
+              requireNonNull(itemAliases, "itemAliases"))));
     return this;
   }
 
@@ -2840,8 +2862,7 @@ public class RelBuilder {
     for (Multiset.Entry<ImmutableBitSet> entry : groupSets.entrySet()) {
       int groupId = entry.getCount() - 1;
       for (int i = 0; i <= groupId; i++) {
-        groupIdToGroupSets.computeIfAbsent(i,
-            k -> Sets.newTreeSet(ImmutableBitSet.COMPARATOR))
+        groupIdToGroupSets.computeIfAbsent(i, k -> Sets.newTreeSet(ImmutableBitSet.COMPARATOR))
             .add(entry.getElement());
       }
     }
@@ -3308,6 +3329,8 @@ public class RelBuilder {
         filter(condition.accept(new Shifter(left.rel, id, right.rel)));
         right = stack.pop();
         break;
+      case LEFT_MARK:
+        break;
       case INNER:
         // For INNER, we can defer.
         postCondition = condition;
@@ -3316,9 +3339,15 @@ public class RelBuilder {
         throw new IllegalArgumentException("Correlated " + joinType + " join is not supported");
       }
       final ImmutableBitSet requiredColumns = RelOptUtil.correlationColumns(id, right.rel);
-      join =
-          struct.correlateFactory.createCorrelate(left.rel, right.rel, ImmutableList.of(), id,
-              requiredColumns, joinType);
+      if (joinType == JoinRelType.LEFT_MARK) {
+        join =
+            struct.conditionalCorrelateFactory.createConditionalCorrelate(left.rel, right.rel,
+                ImmutableList.of(), id, requiredColumns, joinType, condition);
+      } else {
+        join =
+            struct.correlateFactory.createCorrelate(left.rel, right.rel, ImmutableList.of(), id,
+                requiredColumns, joinType);
+      }
     } else {
       RelNode join0 =
           struct.joinFactory.createJoin(left.rel, right.rel,
@@ -3727,8 +3756,14 @@ public class RelBuilder {
   /** Creates a {@link Sort} by specifying collations.
    */
   public RelBuilder sort(RelCollation collation) {
+    return sortLimit(null, null, collation);
+  }
+
+  /** Creates a {@link Sort} by specifying collations, with offset node and fetch node. */
+  public RelBuilder sortLimit(@Nullable RexNode offsetNode, @Nullable RexNode fetchNode,
+      RelCollation collation) {
     final RelNode sort =
-        struct.sortFactory.createSort(peek(), collation, null, null);
+        struct.sortFactory.createSort(peek(), collation, offsetNode, fetchNode);
     replaceTop(sort);
     return this;
   }
@@ -3739,10 +3774,16 @@ public class RelBuilder {
    * @param fetch Maximum number of rows to fetch; negative means no limit
    * @param nodes Sort expressions
    */
-  public RelBuilder sortLimit(long offset, long fetch,
+  public RelBuilder sortLimit(Number offset, Number fetch,
       Iterable<? extends RexNode> nodes) {
-    final @Nullable RexNode offsetNode = offset <= 0 ? null : literal(offset);
-    final @Nullable RexNode fetchNode = fetch < 0 ? null : literal(fetch);
+    final @Nullable RexNode offsetNode =
+        new BigDecimal(offset.toString()).compareTo(BigDecimal.ZERO) <= 0
+            ? null
+            : literal(offset);
+    final @Nullable RexNode fetchNode =
+        new BigDecimal(fetch.toString()).compareTo(BigDecimal.ZERO) < 0
+            ? null
+            : literal(fetch);
     return sortLimit(offsetNode, fetchNode, nodes);
   }
 
@@ -3770,9 +3811,12 @@ public class RelBuilder {
     final Registrar registrar = new Registrar(fields(), ImmutableList.of());
     final List<RelFieldCollation> fieldCollations =
         registrar.registerFieldCollations(nodes);
-    final long fetch = fetchNode instanceof RexLiteral
-        ? RexLiteral.longValue(fetchNode) : -1;
-    if (offsetNode == null && fetch == 0 && config.simplifyLimit()) {
+    final Number fetch = fetchNode instanceof RexLiteral
+        ? RexLiteral.numberValue(fetchNode) : null;
+    if (offsetNode == null
+        && fetch != null
+        && ((BigDecimal) fetch).compareTo(BigDecimal.ZERO) == 0
+        && config.simplifyLimit()) {
       return empty();
     }
     if (offsetNode == null && fetchNode == null && fieldCollations.isEmpty()) {
@@ -4613,7 +4657,7 @@ public class RelBuilder {
     }
 
     @Override public OverCall over() {
-      return new OverCallImpl(aggFunction, distinct, operands, ignoreNulls,
+      return new OverCallImpl(pos, aggFunction, distinct, operands, ignoreNulls,
           alias);
     }
 
@@ -4687,7 +4731,7 @@ public class RelBuilder {
     }
 
     @Override public OverCall over() {
-      return new OverCallImpl(aggregateCall.getAggregation(),
+      return new OverCallImpl(aggregateCall.getParserPosition(), aggregateCall.getAggregation(),
           aggregateCall.isDistinct(), operands, aggregateCall.ignoreNulls(),
           aggregateCall.name);
     }
@@ -4788,6 +4832,8 @@ public class RelBuilder {
    * does the same but also assigns an column alias.
    */
   public interface OverCall {
+    SqlParserPos getPosition();
+
     /** Performs an action on this OverCall. */
     default <R> R let(Function<OverCall, R> consumer) {
       return consumer.apply(this);
@@ -4879,6 +4925,7 @@ public class RelBuilder {
 
   /** Implementation of {@link OverCall}. */
   private class OverCallImpl implements OverCall {
+    private final SqlParserPos pos;
     private final ImmutableList<RexNode> operands;
     private final boolean ignoreNulls;
     private final @Nullable String alias;
@@ -4893,12 +4940,13 @@ public class RelBuilder {
     private final SqlAggFunction op;
     private final boolean distinct;
 
-    private OverCallImpl(SqlAggFunction op, boolean distinct,
+    private OverCallImpl(SqlParserPos pos, SqlAggFunction op, boolean distinct,
         ImmutableList<RexNode> operands, boolean ignoreNulls,
         @Nullable String alias, ImmutableList<RexNode> partitionKeys,
         ImmutableList<RexFieldCollation> sortKeys, boolean rows,
         RexWindowBound lowerBound, RexWindowBound upperBound,
         boolean nullWhenCountZero, boolean allowPartial, RexWindowExclusion exclude) {
+      this.pos = pos;
       this.op = op;
       this.distinct = distinct;
       this.operands = operands;
@@ -4915,12 +4963,16 @@ public class RelBuilder {
     }
 
     /** Creates an OverCallImpl with default settings. */
-    OverCallImpl(SqlAggFunction op, boolean distinct,
+    OverCallImpl(SqlParserPos pos, SqlAggFunction op, boolean distinct,
         ImmutableList<RexNode> operands, boolean ignoreNulls,
         @Nullable String alias) {
-      this(op, distinct, operands, ignoreNulls, alias, ImmutableList.of(),
+      this(pos, op, distinct, operands, ignoreNulls, alias, ImmutableList.of(),
           ImmutableList.of(), true, RexWindowBounds.UNBOUNDED_PRECEDING,
           RexWindowBounds.UNBOUNDED_FOLLOWING, false, true, RexWindowExclusion.EXCLUDE_NO_OTHER);
+    }
+
+    @Override public SqlParserPos getPosition() {
+      return pos;
     }
 
     @Override public OverCall partitionBy(
@@ -4933,13 +4985,13 @@ public class RelBuilder {
     }
 
     private OverCall partitionBy_(ImmutableList<RexNode> partitionKeys) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, rows, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude);
     }
 
     private OverCall orderBy_(ImmutableList<RexFieldCollation> sortKeys) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, rows, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude);
     }
@@ -4960,38 +5012,38 @@ public class RelBuilder {
 
     @Override public OverCall rowsBetween(RexWindowBound lowerBound,
         RexWindowBound upperBound) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, true, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude);
     }
 
     @Override public OverCall rangeBetween(RexWindowBound lowerBound,
         RexWindowBound upperBound) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, false, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude);
     }
 
     @Override public OverCall exclude(RexWindowExclusion exclude) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, rows, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude);
     }
 
     @Override public OverCall allowPartial(boolean allowPartial) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, rows, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude);
     }
 
     @Override public OverCall nullWhenCountZero(boolean nullWhenCountZero) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, rows, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude);
     }
 
     @Override public RexNode as(String alias) {
-      return new OverCallImpl(op, distinct, operands, ignoreNulls, alias,
+      return new OverCallImpl(pos, op, distinct, operands, ignoreNulls, alias,
           partitionKeys, sortKeys, rows, lowerBound, upperBound,
           nullWhenCountZero, allowPartial, exclude).toRex();
     }
@@ -5006,7 +5058,7 @@ public class RelBuilder {
           };
       final RelDataType type = op.inferReturnType(bind);
       final RexNode over = getRexBuilder()
-          .makeOver(type, op, operands, partitionKeys, sortKeys,
+          .makeOver(pos, type, op, operands, partitionKeys, sortKeys,
               lowerBound, upperBound, exclude, rows, allowPartial, nullWhenCountZero,
               distinct, ignoreNulls);
       return aliasMaybe(over, alias);
@@ -5382,5 +5434,30 @@ public class RelBuilder {
   private interface RegisterAgg {
     RexInputRef registerAgg(SqlAggFunction op, List<RexNode> operands,
         RelDataType type, @Nullable String name);
+  }
+
+  /** Creates a {@link Combine} of the top {@code n} relational expressions
+   * on the stack. */
+  public RelBuilder combine(int n) {
+    final List<RelNode> inputs = new ArrayList<>();
+    for (int i = 0; i < n; i++) {
+      inputs.add(0, peek(i));
+    }
+    return push(struct.combineFactory.createCombine(cluster, inputs));
+  }
+
+  /** Creates a {@link Combine} of all relational expressions on the stack. */
+  public RelBuilder combine() {
+    return combine(size());
+  }
+
+  /** Creates a {@link Combine} of the given relational expressions. */
+  public RelBuilder combine(RelNode... inputs) {
+    return push(struct.combineFactory.createCombine(cluster, Arrays.asList(inputs)));
+  }
+
+  /** Creates a {@link Combine} of the given relational expressions. */
+  public RelBuilder combine(Iterable<? extends RelNode> inputs) {
+    return push(struct.combineFactory.createCombine(cluster, ImmutableList.copyOf(inputs)));
   }
 }

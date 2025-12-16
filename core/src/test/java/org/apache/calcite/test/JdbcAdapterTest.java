@@ -248,7 +248,7 @@ class JdbcAdapterTest {
         .query("select * from dept where deptno not in (select deptno from emp)")
         .explainContains("PLAN=JdbcToEnumerableConverter\n"
             + "  JdbcProject(DEPTNO=[$0], DNAME=[$1], LOC=[$2])\n"
-            + "    JdbcFilter(condition=[OR(=($3, 0), AND(IS NULL($6), >=($4, $3)))])\n"
+            + "    JdbcFilter(condition=[OR(AND(IS NULL($6), >=($4, $3)), =($3, 0))])\n"
             + "      JdbcJoin(condition=[=($0, $5)], joinType=[left])\n"
             + "        JdbcJoin(condition=[true], joinType=[inner])\n"
             + "          JdbcTableScan(table=[[SCOTT, DEPT]])\n"
@@ -263,7 +263,7 @@ class JdbcAdapterTest {
             + "FROM \"SCOTT\".\"EMP\") AS \"t\"\n"
             + "LEFT JOIN (SELECT \"DEPTNO\", TRUE AS \"i\"\n"
             + "FROM \"SCOTT\".\"EMP\"\nGROUP BY \"DEPTNO\") AS \"t0\" ON \"DEPT\".\"DEPTNO\" = \"t0\".\"DEPTNO\"\n"
-            + "WHERE \"t\".\"c\" = 0 OR \"t0\".\"i\" IS NULL AND \"t\".\"ck\" >= \"t\".\"c\"");
+            + "WHERE \"t0\".\"i\" IS NULL AND \"t\".\"ck\" >= \"t\".\"c\" OR \"t\".\"c\" = 0");
   }
 
   @Test void testNotPushDownNotIn() {
@@ -1292,7 +1292,7 @@ class JdbcAdapterTest {
             + " SET \"account_id\"=888\n"
             + " WHERE \"store_id\"=666\n";
         final String explain = "PLAN=JdbcToEnumerableConverter\n"
-            + "  JdbcTableModify(table=[[foodmart, expense_fact]], operation=[UPDATE], updateColumnList=[[account_id]], sourceExpressionList=[[888]], flattened=[false])\n"
+            + "  JdbcTableModify(table=[[foodmart, expense_fact]], operation=[UPDATE], updateColumnList=[[account_id]], sourceExpressionList=[[$7]], flattened=[false])\n"
             + "    JdbcProject(store_id=[$0], account_id=[$1], exp_date=[$2], time_id=[$3], category_id=[$4], currency_id=[$5], amount=[$6], EXPR$0=[888])\n"
             + "      JdbcFilter(condition=[=($0, 666)])\n"
             + "        JdbcTableScan(table=[[foodmart, expense_fact]])";
@@ -1428,14 +1428,14 @@ class JdbcAdapterTest {
         + " $f4=['666':VARCHAR(30)], $f5=[666], AMOUNT=[CAST($1):DECIMAL(10, 4) NOT NULL],"
         + " store_id=[$2],"
         + " account_id=[$3], exp_date=[$4], time_id=[$5], category_id=[$6], currency_id=[$7],"
-        + " amount=[$8], AMOUNT0=[$1])\n"
+        + " amount=[$8], AMOUNT0=[CAST($1):DECIMAL(10, 4) NOT NULL])\n"
         + "      JdbcJoin(condition=[=($2, $0)], joinType=[left])\n"
         + "        JdbcValues(tuples=[[{ 666, 42 }]])\n"
         + "        JdbcTableScan(table=[[foodmart, expense_fact]])\n";
     final String jdbcSql = "MERGE INTO \"foodmart\".\"expense_fact\"\n"
         + "USING (VALUES (666, 42)) AS \"t\" (\"STORE_ID\", \"AMOUNT\")\n"
         + "ON \"t\".\"STORE_ID\" = \"expense_fact\".\"store_id\"\n"
-        + "WHEN MATCHED THEN UPDATE SET \"amount\" = \"t\".\"AMOUNT\"\n"
+        + "WHEN MATCHED THEN UPDATE SET \"amount\" = CAST(\"t\".\"AMOUNT\" AS DECIMAL(10, 4))\n"
         + "WHEN NOT MATCHED THEN INSERT (\"store_id\", \"account_id\", \"exp_date\", \"time_id\", "
         + "\"category_id\", \"currency_id\", \"amount\") VALUES \"t\".\"STORE_ID\",\n"
         + "666,\nTIMESTAMP '1997-01-01 00:00:00',\n666,\n'666',\n666,\n"

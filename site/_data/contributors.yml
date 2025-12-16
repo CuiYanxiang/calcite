@@ -314,6 +314,11 @@
   githubId: suez1224
   org: Uber
   role: Committer
+- name: Silun Dong
+  apacheId: silun
+  githubId: silundong
+  org:
+  role: Committer
 - name: Slim Bouguerra
   apacheId: bslim
   githubId: b-slim
@@ -384,6 +389,11 @@
   githubId: liuyongvs
   pronouns: he/him
   org: Ant Financial
+  role: Committer
+- name: Yu Xu
+  apacheId: xuzifu666
+  githubId: xuzifu666
+  org:
   role: Committer
 - name: Zhaohui Xu
   apacheId: zhaohui

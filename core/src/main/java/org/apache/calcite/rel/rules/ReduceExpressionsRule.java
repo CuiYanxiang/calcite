@@ -30,6 +30,7 @@ import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.Window;
+import org.apache.calcite.rel.logical.LogicalAsofJoin;
 import org.apache.calcite.rel.logical.LogicalCalc;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalProject;
@@ -373,6 +374,12 @@ public abstract class ReduceExpressionsRule<C extends ReduceExpressionsRule.Conf
 
     @Override public void onMatch(RelOptRuleCall call) {
       final Join join = call.rel(0);
+      if (join instanceof LogicalAsofJoin) {
+        // Currently ASOF JOINs are restricted by the validator to use very specific
+        // conditions, so there isn't much to simplify about them.
+        // Moreover, calling join.copy() below for an ASOF JOIN will throw.
+        return;
+      }
       final List<RexNode> expList = Lists.newArrayList(join.getCondition());
       final int fieldCount = join.getLeft().getRowType().getFieldCount();
       final RelMetadataQuery mq = call.getMetadataQuery();
@@ -579,7 +586,8 @@ public abstract class ReduceExpressionsRule<C extends ReduceExpressionsRule.Conf
           final List<RexNode> expList = new ArrayList<>(aggCall.getOperands());
           if (reduceExpressions(window, expList, predicates)) {
             aggCall =
-                new Window.RexWinAggCall((SqlAggFunction) aggCall.getOperator(),
+                new Window.RexWinAggCall(aggCall.getParserPosition(),
+                    (SqlAggFunction) aggCall.getOperator(),
                     aggCall.type, expList,
                     aggCall.ordinal, aggCall.distinct, aggCall.ignoreNulls);
             reduced = true;

@@ -807,6 +807,15 @@ public interface CalciteResource {
   @BaseMessage("SELECT * requires a FROM clause")
   ExInst<SqlValidatorException> selectStarRequiresFrom();
 
+  @BaseMessage("EXCLUDE clause must follow a STAR expression")
+  ExInst<CalciteException> selectExcludeRequiresStar();
+
+  @BaseMessage("SELECT * EXCLUDE list contains unknown column(s): {0}")
+  ExInst<SqlValidatorException> selectStarExcludeListContainsUnknownColumns(String columns);
+
+  @BaseMessage("SELECT * EXCLUDE list cannot exclude all columns")
+  ExInst<SqlValidatorException> selectStarExcludeCannotExcludeAllColumns();
+
   @BaseMessage("Group function ''{0}'' can only appear in GROUP BY clause")
   ExInst<SqlValidatorException> groupFunctionMustAppearInGroupByClause(String funcName);
 
@@ -1156,4 +1165,10 @@ public interface CalciteResource {
 
   @BaseMessage("Index in ROW type does not have a constant integer or string value")
   ExInst<SqlValidatorException> illegalRowIndex();
+
+  @BaseMessage("Unequal number of entries in ROW expressions")
+  ExInst<SqlValidatorException> unequalRowSizes();
+
+  @BaseMessage("Cannot infer return type for {0}; operand types: {1}")
+  ExInst<SqlValidatorException> cannotInferReturnType(String operator, String types);
 }

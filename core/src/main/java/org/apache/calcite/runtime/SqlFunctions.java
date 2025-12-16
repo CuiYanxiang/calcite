@@ -3277,6 +3277,125 @@ public class SqlFunctions {
     return binaryOperator(b0, b1, (x, y) -> (byte) (x & y));
   }
 
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UByte} values.
+   * Returns {@code null} if any operand is null.
+   */
+  public static UByte bitAnd(UByte b0, UByte b1) {
+    return UByte.valueOf((short) (b0.shortValue() & b1.shortValue()));
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UShort} values.
+   * Returns {@code null} if any operand is null.
+   */
+  public static UShort bitAnd(UShort b0, UShort b1) {
+    return UShort.valueOf(b0.intValue() & b1.intValue());
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UInteger} values.
+   * Returns {@code null} if any operand is null.
+   */
+  public static UInteger bitAnd(UInteger b0, UInteger b1) {
+    return UInteger.valueOf(b0.longValue() & b1.longValue());
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.ULong} values. Returns
+   * {@code null} if any operand is null.
+   */
+  public static ULong bitAnd(ULong b0, ULong b1) {
+    return ULong.valueOf(b0.longValue() & b1.longValue());
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UInteger} and {@link Integer}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static long bitAnd(UInteger b0, long b1) {
+    return b0.intValue() & b1;
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.ULong} and {@link long}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static long bitAnd(ULong b0, long b1) {
+    return b0.longValue() & b1;
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link long} and {@link org.joou.UInteger}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static long bitAnd(long b1, ULong b2) {
+    return b1 & b2.longValue();
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link long} and {@link org.joou.UInteger}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static long bitAnd(long b1, UInteger b2) {
+    return b1 & b2.longValue();
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UShort} and {@link Integer}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static long bitAnd(UShort b0, long b1) {
+    return b0.intValue() & b1;
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UShort} and {@link Integer}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static long bitAnd(long b0, UShort b1) {
+    return b0 & b1.intValue();
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UInteger} and {@link Integer}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static UInteger bitAnd(UInteger b0, int b1) {
+    return UInteger.valueOf(b0.intValue() & b1);
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UInteger} and {@link Integer}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static ULong bitAnd(ULong b0, int b1) {
+    return ULong.valueOf(b0.longValue() & b1);
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link Integer} and {@link org.joou.UInteger}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static ULong bitAnd(int b1, ULong b2) {
+    return ULong.valueOf(b1 & b2.longValue());
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UShort} and {@link Integer}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static Integer bitAnd(int b0, UShort b1) {
+    return b0 & b1.intValue();
+  }
+
+  /**
+   * Bitwise function <code>BITAND</code> applied to {@link org.joou.UShort} and {@link Integer}
+   * values. Returns {@code null} if any operand is null.
+   */
+  public static Integer bitAnd(UShort b0, int b1) {
+    return b0.intValue() & b1;
+  }
   /** Helper function for implementing <code>BITCOUNT</code>. Counts the number
    * of bits set in an integer value. */
   public static long bitCount(long b) {
@@ -6763,6 +6882,43 @@ public class SqlFunctions {
       map.put(key, value);
     }
     return map;
+  }
+
+  /** Combines multiple query result lists into rows for the Combine operator.
+   *
+   * <p>Each input list contains maps representing rows from a query.
+   * The output is a list of Object arrays, where each array is a row
+   * with one element per query. The number of output rows equals the
+   * maximum size across all input lists. Shorter lists are padded with nulls.
+   *
+   * @param queryLists array of lists, one per query
+   * @return list of Object arrays representing combined rows
+   */
+  public static List<@Nullable Object[]> combineQueryResults(List[] queryLists) {
+    // Find the maximum row count across all queries
+    int maxRows = 0;
+    for (List list : queryLists) {
+      if (list.size() > maxRows) {
+        maxRows = list.size();
+      }
+    }
+
+    // Build the result rows
+    List<@Nullable Object[]> result = new ArrayList<>(maxRows);
+    for (int rowIdx = 0; rowIdx < maxRows; rowIdx++) {
+      @Nullable Object[] row = new Object[queryLists.length];
+      for (int queryIdx = 0; queryIdx < queryLists.length; queryIdx++) {
+        List queryList = queryLists[queryIdx];
+        if (rowIdx < queryList.size()) {
+          row[queryIdx] = queryList.get(rowIdx);
+        } else {
+          row[queryIdx] = null;
+        }
+      }
+      result.add(row);
+    }
+
+    return result;
   }
 
   /** Support the STR_TO_MAP function. */
