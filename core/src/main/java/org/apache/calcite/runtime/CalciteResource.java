@@ -1169,6 +1169,15 @@ public interface CalciteResource {
   @BaseMessage("Unequal number of entries in ROW expressions")
   ExInst<SqlValidatorException> unequalRowSizes();
 
+  @BaseMessage("Star is not allowed in ROW constructor outside of query context")
+  ExInst<SqlValidatorException> rowStarNotAllowed();
+
   @BaseMessage("Cannot infer return type for {0}; operand types: {1}")
   ExInst<SqlValidatorException> cannotInferReturnType(String operator, String types);
+
+  @BaseMessage("SELECT BY cannot be used with GROUP BY")
+  ExInst<SqlValidatorException> selectByCannotWithGroupBy();
+
+  @BaseMessage("SELECT BY cannot be used with ORDER BY")
+  ExInst<SqlValidatorException> selectByCannotWithOrderBy();
 }

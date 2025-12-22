@@ -489,9 +489,10 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
       selectScope = getSelectScope(select);
       expanded = expandSelectExpr(selectItem, scope, select, expansions);
 
-      // Non-strict GROUP BY: wrap non-aggregated, non-grouped columns in ANY_VALUE()
+      // Non-strict GROUP BY or BY clause: wrap non-aggregated, non-grouped columns in ANY_VALUE()
       if (isAggregate(select)
-          && config.conformance().isNonStrictGroupBy()
+          && (config.conformance().isNonStrictGroupBy()
+          || select.hasByClause())
           && isNonAggregatedNonGroupedColumn(expanded, select)) {
         expanded =
             SqlStdOperatorTable.ANY_VALUE.createCall(expanded.getParserPosition(), expanded);
@@ -554,7 +555,11 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
     }
 
     if (node instanceof SqlCall) {
-      return ((SqlCall) node).getOperandList().stream()
+      final SqlCall call = (SqlCall) node;
+      if (call.getKind() == SqlKind.AS) {
+        return isNonAggregatedNonGroupedColumn(call.operand(0), select);
+      }
+      return call.getOperandList().stream()
           .anyMatch(operand -> isNonAggregatedNonGroupedColumn(operand, select));
     } else if (node instanceof SqlLiteral) {
       return true;
@@ -7407,9 +7412,67 @@ public class SqlValidatorImpl implements SqlValidatorWithHints {
       CallCopyingArgHandler argHandler =
           new CallCopyingArgHandler(call, false);
       call.getOperator().acceptCall(this, call, true, argHandler);
-      final SqlNode result = argHandler.result();
+      final SqlNode result = expandStarInRow(argHandler.result());
       validator.setOriginal(result, call);
       return result;
+    }
+
+    /**
+     * Expands star (*) within ROW constructors.
+     * For example, transforms {@code ROW(*)} or {@code ROW(t.*)} into
+     * {@code ROW(col1, col2, ...)} based on available columns in scope.
+     *
+     * @param node Node to potentially expand
+     * @return Original node if not a ROW with stars, otherwise expanded ROW
+     */
+    private SqlNode expandStarInRow(SqlNode node) {
+      if (!(node instanceof SqlCall)) {
+        return node;
+      }
+      final SqlCall call = (SqlCall) node;
+      if (call.getKind() != SqlKind.ROW) {
+        return node;
+      }
+      final SqlValidatorScope scope = getScope();
+      if (!(scope instanceof SelectScope)) {
+        // Check if any operand is a star identifier before throwing error
+        for (SqlNode operand : call.getOperandList()) {
+          if (operand instanceof SqlIdentifier
+              && ((SqlIdentifier) operand).isStar()) {
+            throw validator.newValidationError(node,
+                RESOURCE.rowStarNotAllowed());
+          }
+        }
+        return node;
+      }
+      final SelectScope selectScope = (SelectScope) scope;
+      final List<SqlNode> expandedOperands = new ArrayList<>();
+      boolean expanded = false;
+      for (SqlNode operand : call.getOperandList()) {
+        if (operand instanceof SqlIdentifier) {
+          final SqlIdentifier identifier = (SqlIdentifier) operand;
+          if (identifier.isStar()) {
+            final boolean expandedStar =
+                validator.expandStar(expandedOperands,
+                    validator.catalogReader.nameMatcher().createSet(),
+                    PairList.of(),
+                    false,
+                    selectScope,
+                    identifier);
+            if (!expandedStar) {
+              throw new AssertionError("Row star expansion failed for " + identifier);
+            }
+            expanded = true;
+            continue;
+          }
+        }
+        expandedOperands.add(operand);
+      }
+      if (!expanded) {
+        return node;
+      }
+      return SqlStdOperatorTable.ROW.createCall(
+          call.getParserPosition(), expandedOperands);
     }
 
     protected SqlNode expandDynamicStar(SqlIdentifier id, SqlIdentifier fqId) {
